@@ -1763,9 +1763,9 @@ do {
  Edc = Vdc_OUT;
  //Edc_rf=Edc;
  //Edc_rf = Edc_rf + (Vdc-Edc_rf)*2.0e-03; //100Hz filter used in flux weakening
- Edc_rf=Edc_rf+(Edc-Edc_rf)*6.28*1000.0*Ts;
+// Edc_rf=Edc_rf+(Edc-Edc_rf)*6.28*1000.0*Ts;
 
- Edc_tmp=Edc_rf;
+// Edc_tmp=Edc_rf;
 
  Edc_fk2 = Edc_fk1;
  Edc_fk1 = Edc;
@@ -1806,8 +1806,6 @@ do {
  // PLL for speed
  // define the low pass filter in the following section
  wr_lf=wr_lf+(wr-wr_lf)*Ts*60; //0.003926987;  //bandwidth
- wr_max=100000.0;
- wr_min=0.0;
  theta_lf=theta_lf+(theta_err-theta_lf)*Ts*411.0 ;      //wp=411.0
  //theta_lf=theta_lf+(theta_err-theta_lf)*Ts*578.0*2 ;      //Tau=1/wp
  //define the PI controller in the PLL, structure (kp_pll*s+ki_pll)/s
@@ -1815,15 +1813,11 @@ do {
  wr_est=kp_pll*(theta_lf)+wr_int_out;
 
 
- if ((wr_int_out-wr)>50) {
-	wr_int_out=wr;
- }
-  if ((wr_int_out-wr)<-50) {
-	wr_int_out=wr;
- }
+ 
 
  //wr_int_out=wr_int_out+ki_pll*Ts*theta_lf;
-
+ wr_max=100000.0;
+ wr_min=0.0;
  if(wr_est>=wr_max)  {
       wr_est=wr_max;
  } else {
@@ -1833,7 +1827,12 @@ do {
  		 wr_int_out=wr_int_out+ki_pll*Ts*theta_lf;
  	  }
  }
-
+if ((wr_int_out-wr)>50) {
+	wr_int_out=wr;
+ }
+  if ((wr_int_out-wr)<-50) {
+	wr_int_out=wr;
+ }
 
  theta_est=theta_est+wr_est*Ts;
 
@@ -1860,6 +1859,12 @@ do {
  //theta_lf=theta_lf+(theta_err-theta_lf)*Ts*578.0*2 ;      //Tau=1/wp
  //define the PI controller in the PLL, structure (kp_pll*s+ki_pll)/s
  
+ if ((wr_int_out1-wr)>50.0 ){
+	wr_int_out1=wr;
+ }
+  if ((wr_int_out1-wr)<-50.0) {
+	wr_int_out1=wr;
+ }
 
  wr_est1=kp_pll*(theta_lf1)+wr_int_out1;
 
@@ -1875,12 +1880,6 @@ do {
  	  }
  }
 
- if ((wr_int_out1-wr)>50.0 ){
-	wr_int_out1=wr;
- }
-  if ((wr_int_out1-wr)<-50.0) {
-	wr_int_out1=wr;
- }
 
 
  theta_est1=theta_est1+wr_est1*Ts;
@@ -1904,7 +1903,7 @@ do {
 
  theta_est_final=theta-theta_err_final;
 
- wm_est=0.3333333*wr_est1;
+ wm_est=0.3333333*wr_est;
 
 
 /*****dq transformation*******/
@@ -1937,7 +1936,7 @@ if (Generating==0){
 
 //calculate idc_ref
 //Edc_tmp=Edc;
-Edc_tmp=Vdc;   //Droop with no filter
+  Edc_tmp=Vdc;   //Droop with no filter
 
 
 //Edc_ref -> idc_ref look-up table
@@ -1960,10 +1959,10 @@ else
 if (((K_ConvStatus & 0x80) == 0x80) && (idc_ref>0))		//Disable negative power generating
 	idc_ref = 0;
 
-if (idc_ref>=160.0)
-	idc_ref=160.0;
-if (idc_ref<=-160.0)
-	idc_ref=-160.0;
+if (idc_ref>=170.0)
+	idc_ref=170.0;
+if (idc_ref<=-170.0)
+	idc_ref=-170.0;
 
 /*******************************************/
 /************vdc controller in the idle mode*******************/
@@ -2050,10 +2049,10 @@ id_err=id_ref-id;
 id_int_new = id_pre_int + 0.5*(id_err+pre_id_err);
 pre_id_err=id_err;
 //Do the PI controller
-  vd_tmp_output = kp_i*id_err + ki_i*id_int_new - wr_est*(Lq*iq_ref);//wr_est1
+  vd_tmp_output = kp_i*id_err + ki_i*id_int_new - wr_est*(Lq*iq);//wr_est1
 //  vd_tmp_output = kp_i*id_err + ki_i*id_int_new - wr*(Lq*iq_ref);
 //check if saturated
-id_int_ok = 1;      		 //flag check the saturation status of d-axis controller
+id_int_ok = 1.0;      		 //flag check the saturation status of d-axis controller
 if (vd_tmp_output >= v_max) {
 	vd_tmp_output = v_max;
 	//check if error will make saturation worse
@@ -2165,7 +2164,7 @@ else if (iq_ref<=-temp_irq_f)
 iq_err=iq_ref-iq;
 iq_int_new = iq_pre_int + 0.5*(iq_err+pre_iq_err);
 pre_iq_err=iq_err;
-    vq_tmp_output = kp_i*iq_err + ki_i*iq_int_new+wr_est*(Ld*id_ref+flux);
+    vq_tmp_output = kp_i*iq_err + ki_i*iq_int_new+wr_est*(Ld*id+flux);
 //   vq_tmp_output = kp_i*iq_err + ki_i*iq_int_new+wr*Ld*id_ref+wr*flux;
 
 //check if saturated
