@@ -1,0 +1,2472 @@
+//DIGITAL INPUTS  : DPR1[11:8]
+//DIGITAL OUTPUTS : DPR9[11:8]
+
+// Mdobus 10.50.43.41:502
+
+//Gel file in:
+//   >>>   C:\ti\ccsv5\ccs_base\emulation\boards\dsk6713\gel
+//Add to debug sources C:\TI\ccsv5\tools\compiler\c6000_7.4.11\lib\src
+
+#define komega_RPM      6.5449846949787359134638403818323e-6
+#define kRadtoGrad      57.295779513082320876798154814105
+#define RPM2RadSec      0.10471975511965977461542144610932     //    TWOPI/60.0
+#define Rad2RPM         9.5492965855137201461330258023509     //    TWOPI/60.0
+
+#define FSW             16000.0
+#define K_MaxSpeedRPM   21000
+#define __DisplaySpeed   1
+#define k_SpeedMotoring  19500.0/60*TWOPI
+//#define k_SlopeMotoring  10000.0/60.0*TWOPI/(16000.0*120.0)    //10k in 120 sec
+// #define k_SlopeMotoring  8000.0/60.0*TWOPI/(16000.0*30.0)        //8k in 30 sec
+//#define k_SlopeMotoring  0.001636246173745   //250/30*pi/(16000*1)  %6.25krpm in 25 sec
+#define k_SlopeMotoring  0.0008181230868725    //6250.0/60.0*TWOPI/(16000.0*50.0)        //6.2k in 50 sec
+
+
+unsigned int    ConvCmd;
+
+#define KDimArrayMax    36
+#define K_TMR_1sec      0x35A4E90 // = (225MHz/4 = Clk in for timers)
+
+#define K_ConvStatus    MOD_Variables[0]
+#define K_TestBit1      MOD_Variables[1]
+#define K_TestBit2      MOD_Variables[2]
+#define K_IdRead		MOD_Variables[3]
+#define K_IqRead		MOD_Variables[4]
+#define K_IaRead		MOD_Variables[5]
+#define K_VdcPRead		MOD_Variables[6]
+#define K_VdcMRead		MOD_Variables[7]
+#define K_PowRead		MOD_Variables[8]
+#define K_SpeedRead		MOD_Variables[9]
+#define K_VdcRef		MOD_Variables[10]
+#define K_DroopVref  	MOD_Variables[11]
+#define K_DroopKp	    MOD_Variables[12]
+
+//#define K_ConvStatusCmd ConvCmd					//This for lab
+#define K_ConvStatusCmd MOD_Variables[64]			//This for ETB
+#define K_VdcSetRef		MOD_Variables[65]
+#define K_DroopSetVref	MOD_Variables[66]
+#define K_DroopSetKp	MOD_Variables[67]
+
+#ifdef _DEBUG
+#include <stdio.h>
+#endif
+#include <c6x.h>
+#include <c67fastMath.h>
+#include <math.h>   /* provides access to trig functions */
+#include "c6x13dsk.h"
+#include "aparams.h"
+#include "codeparams.h"
+#include "FPGAV2.h"
+//#include "max5478.h"
+#include "display.h"
+#include "mcbspAD2S1210.h"
+#include <csl.h>
+#include <csl_mcbsp.h>
+
+//#define __EnableEEWrite 1
+
+int  DriveOn;  //C8X_DEBUG('wis',1,'_offsetPulse',1)
+
+//float Vmax; //C8X_DEBUG('wfs',n,'_Vmax',1)
+//C8X_DEBUG('wfs',25,'_Vdcrifnew',1)
+//
+
+
+float Edc_k1,Edc_k2,Edc_fk1,Edc_fk2;
+float debug1, debug2, debug3, w_ref;
+
+unsigned int Tseq_Pulses,Tseq_2_Pulses;
+
+float V_ALPHA, V_BETA, k_wm_slope ;
+float ia, ib, ic, itot,ia_trip, ib_trip, ic_trip;
+float Vdc;
+
+int adc0, adc1, adc2, adc3, adc4, adc5, adc6, adc7, adc8, adc9;
+int speedDecimation;
+Uint32 delayFault, lastFault;
+
+
+unsigned int IOLedStatus, temp_uint, OverTempDelay;
+
+
+//Display variables
+int  delay_err, i_err, last_msg,delay_disp,next_message, int_delay, lastTemp;
+
+float TempA1, TempB1, TempA2, TempB2, TempA3, TempB3, TempMax, TempMaxNew;
+
+unsigned int dpr0, dpr1, dpr2, dpr3, dpr4, dpr5, dpr6, dpr7, dpr8, dpr9, dpr10, dpr11;
+int temp_int, temp_int1, temp_int2, temp_int3, temp_int4, RxBufferCountTimeout;
+int temp_irqInt1, temp_irqInt2;
+
+ //C8X_DEBUG('wfs',n,'_Vmax',1)
+float V_DC_H, V_DC_L;
+float outputCurr[3];
+float v_mag, v_ang;
+float alpha, sector_offset; //, tau_a, tau_b, tau_0;
+float m, msq3cos, msin, sq3cosA, sinA, maxM;
+float d1, d2, d3;
+float Ts;
+int   sw1, sw2, sw3;
+float capDQ;                //Delta in cap charge, >0 if Vdc+ > Vdc-
+float it_med, it_smallB, it_smallF;  //i * t small vector and medium vector
+unsigned char currVect;
+unsigned int swTmp, swConf1, swConf2, swConf3;
+unsigned char sector, SUBSECTOR;
+float DEBUG1, DEBUG2, DEBUG3, tempIf ;
+
+unsigned short statusBits;
+unsigned short txBuffer[BUFFERSIZE];
+unsigned short rxBuffer[BUFFERSIZE];
+unsigned short rxBuffDone, temp_short;
+unsigned char tmpMsg[300];
+unsigned char rxModbusBuffer[BUFFERDECODEDSIZE];
+unsigned char tempChar[10];
+unsigned short ModbusBufferTodoPtr, ModbusBufferEndPtr, ModbusDatalen, ModbusBufferTodoPtrL, ModbusBufferTodoPtrH;
+unsigned short ModbusFunclen, ModbusFunc;
+unsigned int tempOut;
+unsigned int dIII, dI, dII, Utemp, PATTERN, PATTERN_NEW;
+
+short MOD_Variables[SIZEMODBUSMEMDATA];
+short MOD_temp, MOD_dataPtr;
+short ConvStatusCmd;
+unsigned int	CountPwmInterrupt, overcurrentDelay;
+
+float SpeedRPM, K_Speed, K_SpeedRPM, K_PosRad, PositionRad, DriveOn_f, theta_deg;
+char delaySetpoint, delayResolverError, delayResolverBuffError;
+char Generating, Motoring, Idling, Rdy2Load, ConverterOn;  //Rdy2Start = DriveOn
+
+//  #####################
+//  Variables for TAO's code
+//  #####################
+//float  id, iq;
+float temp_irq_f;
+
+
+//double kp_i=0.846,ki_i=0.2288;   //C8X_DEBUG('wfs',0.846,'_kp_i',1);  C8X_DEBUG('wfs',0.2288,'_ki_i',1);
+//float kp_i=0.846,ki_i=0.2288;		//C8X_DEBUG('wfs',0.08,'_kp_i',1)  Original
+//float kp_i=0.4524,ki_i=0.061;		//500Hz <<<!!!  C8X_DEBUG('wfs',0.4524,'_kp_i',1);  C8X_DEBUG('wfs',0.061,'_ki_i',1);
+//float kp_i=0.7238,ki_i=0.1562;	//800Hz <<<!!!  C8X_DEBUG('wfs',0.7238,'_kp_i',1);  C8X_DEBUG('wfs',0.1562,'_ki_i',1);
+//float kp_i=0.9048,ki_i=0.2440;	//1KHz  <<<!!!  C8X_DEBUG('wfs',0.9048,'_kp_i',1);  C8X_DEBUG('wfs',0.2440,'_ki_i',1); //23 March
+float kp_i=0.154,ki_i=0.0098;		//200Hz C8X_DEBUG('wfs',0.154,'_kp_i',1);  C8X_DEBUG('wfs',0.0098,'_ki_i',1);
+//float kp_i=0.9484,ki_i=0.244;		//      C8X_DEBUG('wfs',0.154,'_kp_i',1);  C8X_DEBUG('wfs',0.0098,'_ki_i',1);
+//float kp_i=0.4742,ki_i=0.122;		//test 14th feb  File: CurLoopPI2 C8X_DEBUG('wfs',0.4742,'_kp_i',1);  C8X_DEBUG('wfs',0.122,'_ki_i',1);
+//float kp_i=0.2262,ki_i=0.0305;		//250Hz <<<!!!  C8X_DEBUG('wfs',0.2262,'_kp_i',1);  C8X_DEBUG('wfs',0.0305,'_ki_i',1); 13 Marc 2015
+
+
+//double kp_w=71.7,ki_w=0.39375;  //Original values
+//float kp_w=0.3316,ki_w=8.13e-4;  //10Hz C8X_DEBUG('wfs',7.17,'_kp_w',1); C8X_DEBUG('wfs',0.0195,'_ki_w',1);
+//float kp_w=1.6580,ki_w=0.0033;  //C8X_DEBUG('wfs',1.6580,'_kp_w',1); C8X_DEBUG('wfs',0.0033,'_ki_w',1);
+//float kp_w=13.2640,ki_w=0.0160;   //<<<!!!   C8X_DEBUG('wfs',20*0.6632,'_kp_w',1); C8X_DEBUG('wfs',5*0.0032,'_ki_w',1);
+//float kp_w=20.0253,ki_w=0.005;   //C8X_DEBUG('wfs',20.0253,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1);
+//float kp_w=20.2535,ki_w=0.4971;   //100Hz C8X_DEBUG('wfs',20.0253,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1);
+//float kp_w=20.2535,ki_w=0.005;   // C8X_DEBUG('wfs',20.0253,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1);
+//float kp_w=2.0,ki_w=0.005;   // C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1);
+//float kp_w=2.0,ki_w=0.0018;   //C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.0018,'_ki_w',1);
+//float kp_w=14.5,ki_w=0.0040368;   // C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1);
+//float kp_w=1.48,ki_w=0.00041;   //1Hz C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 17/03
+//float kp_w=2.96,ki_w=0.00164;   //2Hz C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 18/03
+//float kp_w=43.4,ki_w=0.024;  //2Hz J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+//float kp_w=325,ki_w=1.355;     //15Hz J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+//float kp_w=21.69,ki_w=0.006;     //1Hz J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+//float kp_w=10.8,ki_w=0.0015;     //0.5Hz J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+//float kp_w=2.169,ki_w=6.03e-5;     //0.1Hz J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+//float kp_w=2.169,ki_w=3.015e-5;     //0.06mm Hz J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+//float kp_w=0.542,ki_w=3.77e-6;     //0.025Hz J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+//float kp_w=1.084,ki_w=3.77e-6;     //J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+//float kp_w=2.168,ki_w=3.77e-6;       //J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+float kp_w=1.5,ki_w=3.77e-6;       //J = 0.4 C8X_DEBUG('wfs',2.0,'_kp_w',1); C8X_DEBUG('wfs',0.005,'_ki_w',1); 22/06
+
+//float kp_s = 0.1, ki_s=0.02;  //C8X_DEBUG('wfs',0.1,'_kp_s',1); C8X_DEBUG('wfs',0.02,'_ki_s',1);
+//float kp_s = 0.05, ki_s=0.01;  //C8X_DEBUG('wfs',0.05,'_kp_s',1); C8X_DEBUG('wfs',0.01,'_ki_s',1);
+//float kp_s = 0.2, ki_s=0.0275;  //C8X_DEBUG('wfs',0.2,'_kp_s',1); C8X_DEBUG('wfs',0.0275,'_ki_s',1); 17/03
+//float kp_s = 0.05, ki_s=0.04375;  //C8X_DEBUG('wfs',0.2,'_kp_s',1); C8X_DEBUG('wfs',0.0275,'_ki_s',1); 01/04
+float kp_s = 0.05, ki_s=0.04375;  //C8X_DEBUG('wfs',0.2,'_kp_s',1); C8X_DEBUG('wfs',0.0275,'_ki_s',1); 15/04
+
+float v_max=155;  //160
+//double i_max=400,  i_min=-400;
+float i_max=360.0;  	// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+float Ld=99.66667e-6, Lq=104.666667e-6;
+float flux=0.034;
+// double p=6; //poles
+float ki_vc=0.03125;
+float lamda=1.5;
+float Torque, PowerOut;
+
+#define firing_speed 9990
+#define generating_speed 18500
+#define PolePairs       3.0
+
+//Input vars:
+//float vs_ref;
+float Vdq,Vdq_k1,Vdq_k2,Vdq_f,Vdq_fk1,Vdq_fk2;
+float wm_ref,wm_ref_now;   //mechanical speed reference   C8X_DEBUG('wfs',10,'_wm_ref',1);
+float wm,wm1,wm_k1,wm_k2,wm_fk1,wm_fk2;       //mechanical speed
+//#define wr     Input(6) //electrical speed
+
+float theta; //electrical theta
+float Edc;
+float motoring_mode;  //Input mode of operation
+float idc;
+//Output vars:
+float vd_f;
+float vq_f;
+float v0_f;
+
+//id current loop
+ float id_ref=0;
+// static double id_tmp=0.0f;
+ float id_err;
+ float pre_id_err;
+ float id_pre_int;        //previous integrator value of d-axis controller
+ float vd_tmp_output;     //temp vd output value of d-axis controller
+ float id_int_new;        //new integrater value of d-axis controller
+ char id_int_ok;          //flag check the saturation status of d-axis controller
+
+//iq current loop
+ float iq_ref=0;            //iq_ref in the motoring mode
+// static double iq_tmp=0.0f;
+ float iq_tmp_ref1;
+// static double iq_ref1=0.0f;      //iq_ref in the generating mode
+ float iq_err;
+ float pre_iq_err;
+ float iq_pre_int;        //previous integrator value of q-axis controller
+ float vq_tmp_output;     //temp vd output value of q-axis controller
+ float iq_int_new;        //new integrater value of q-axis controller
+ char iq_int_ok;          //flag check the saturation status of q-axis controller
+
+//speed loop
+ float wm_err;
+ float pre_wm_err;
+ float wm_pre_int;        //previous integrator value of speed-loop controller
+ float wm_tmp_output;     //temp vd output value of speed-loop controller
+ float wm_int_new;        //new integrater value of speed-loop controller
+ char wm_int_ok;          //flag check the saturation status of speed-loop controller
+
+//flux weakening loop
+ float vs_err;
+ float pre_vs_err;
+ float vs;
+ float vs_pre_int;        //previous integrator value of Edc-loop controller
+ float vs_tmp_output;     //vs_tmp_output is the temprary id_ref value
+ float vs_int_new;        //new integrater value of Edc-loop controller
+ char vs_int_ok;          //flag check the saturation status of Edc_loop controller
+ float vs_out;
+
+ float vd_out;
+ float vq_out;
+ float pre_idc_err;
+
+ float id=0;
+ float iq=0;
+ //float id_m=0.0;
+ //float iq_m=0.0;
+ double vd_out1,vq_out1;
+
+ float i_alpha, i_beta;
+
+ float idc_ref;
+ float Edc_tmp;
+ float pre_Edc;
+
+ float wr, PosRadiants;
+
+ float idc_err;
+ float idc_int_new;
+ float idc_pre_int;
+ 
+  //vdc controller
+  double vdc_err;
+  double vdc_int_new;
+  static double vdc_pre_int=0;
+  unsigned int vdc_int_ok = 1; 
+  double vdc_ref=270.0;
+  static double pre_vdc_err=0.0;
+  double idc_tmp_ref1=0;
+  
+  
+
+
+ //********************** variables of PLL***************/
+
+ float theta_err=0;
+ float theta_est=0;
+ float wr_lf=0;
+
+ float wr_max;
+ float wr_min;
+ float theta_lf=0;
+
+ float wr_est= 0;
+ float wm_est=0;
+ float kp_pll=170.0*0.5;
+ float ki_pll=12045.0*0.25;
+ //float kp_pll=239.6;
+ //float ki_pll=23678.0;
+ float wr_int_out=0;
+
+ float wr_c=0;
+ float theta_c=0;
+ float theta_err_final=0;
+ float theta_est_final=0;
+
+ /********************variables of cascaded PLL for speed*************/
+ float theta_err1=0.0;
+ float theta_est1=0.0;
+ float theta_lf1=0.0;
+ float wr_int_out1=0.0;
+ float wr_est1=0.0;
+
+
+ /****************define cos(theta) and sin(theta)***********************************/
+ float cos_theta=1.0;
+ float sin_theta=0.0;
+
+ // Droop coefficient in equation idc_ref=K_Edc*(Edc_tmp-Edc0);
+ //float K_Edc=8.0;
+ //float Edc0=270.0;
+ float K_droop=1.0588;
+ float Edc_rf=270.0;
+
+ //fileter of vdc
+ float Kf_Edc=6.28;
+
+ //second order filter
+ float w_fn=62.8; //10Hz
+ float w_ffn=62.8;
+ float Vdc_OUT_1=0;
+ float Vdc_OUT =0.0;
+ // ########## End of TAO's variables  ################
+
+ // functions used:
+void timer0_init(); 
+void timer1_init();
+void pwm_isr();
+void init_max5478();
+void init_FPGA();
+void init_controller();
+void reset_controller();
+//void init_McBSP0();
+unsigned char BufferTxAD2S1210[16], BufferRxAD2S1210[16];
+short Res_speed;
+unsigned short Res_position, Res_Status, Res_Last_Error, DeltaPos, tempUshort;
+
+MCBSP_Handle hMcBSP_ch0, hMcBSP_ch1;
+EDMA_Handle hEdma_rx, hEdma_tx, hEdma_rxAD2S1210, hEdma_txAD2S1210;
+
+#ifdef _HOST
+	#include "trace.h"							// List of variable to acquire with the host
+	#define	TRACE_INCLUDED
+	#include "host.h"
+#endif
+
+#include <csl.h>
+#include <csl_edma.h>
+#include <csl_mcbsp.h>
+
+
+unsigned char curr_vect[3][3][3] = //[sw a][sw b][sw c], output 1..3 = Ia..Ic, 0x11..0x13 = -Ia..-Ic
+{ //sw a = 0
+ {{0x00,0x03,0x00},   //sw b = 0  [nnn nno nnp]
+  {0x02,0x11,0x02},   //sw b = 1  [non noo nop]
+  {0x00,0x03,0x00}},  //sw b = 2  [npn npo npp]
+  //sw a = 1
+ {{0x01,0x12,0x01},   //sw b = 0  [onn ono onp]
+  {0x13,0x00,0x13},   //sw b = 1  [oon ooo oop]
+  {0x01,0x12,0x01}},  //sw b = 2  [opn opo opp]
+  //sw a = 2
+ {{0x00,0x03,0x00},   //sw b = 0  [pnn pno pnp]
+  {0x02,0x11,0x02},   //sw b = 1  [pon poo pop]
+  {0x00,0x03,0x00}}}; //sw b = 2  [ppn ppo ppp]
+
+unsigned int sw_3lvl[6][6] =  //matlab, for output decoding logic: OP1 = bit[1] OP2 = xnor(bit[0], bit[1])
+{ //   A      B*     C      D      E      F*                  B & F + 0x111 valid too
+    {0x000, 0x100, 0x200, 0x210, 0x220, 0x110},  //sector 0
+    {0x000, 0x110, 0x220, 0x120, 0x020, 0x010},  //sector 1
+	{0x000, 0x010, 0x020, 0x021, 0x022, 0x011},  //sector 2
+    {0x000, 0x011, 0x022, 0x012, 0x002, 0x001},  //sector 3
+    {0x000, 0x001, 0x002, 0x102, 0x202, 0x101},  //sector 4
+    {0x000, 0x101, 0x202, 0x201, 0x200, 0x100}}; //sector 5
+
+short Temp_list[18] = { -20, -10,   0,  10,  20,  30,  40,  50,  60,  70,  80,  90, 100, 110, 120, 130, 140, 150} ;
+//short Vout_list={4.87,4.80,4.69,4.54,4.34,4.10,3.80,3.48,3.12,2.75,2.40,2.07,1.76,1.49,1.25,1.05,0.88,0.75,}
+unsigned short TempDig_list[18]={ 998, 983, 961, 930, 890, 839, 779, 712, 639, 564, 491, 423, 361, 305, 256, 215, 181, 153};
+float TempCoeff_list[17]={-0.66666667,-0.45454545,-0.32258065,-0.25000000,-0.19607843,-0.16666667,-0.14925373,-0.13698630,-0.13333333,-0.13698630,-0.14705882,-0.16129032,-0.17857143,-0.20408163,-0.24390244,-0.29411765,-0.35714286};
+
+float Torque_m40[9] = { 0,10, 40 ,40,  32,  32,  37,   4,   0};
+float Speed_m40[10] = { 0,50,400,600,2200,4000,6500,8500,10000,100000};
+
+float Torque_55[9] = {5, 7.8,  14,  22,24.5,24.7,  12,   7,    1};
+float Speed_55[10]  = {0,2000,4000,6000,6300,6500,8000,9000,12000,100000};
+
+//  D:\Dropbox\AEGART\DAC\Coeff.m, 0x8000 = 82Nm
+float Coeff_m40[9]= {0.2000000, 0.0857143, 0.0000000, -0.0050000, 0.0000000, 0.0020000, -0.0165000, -0.0026667, 0 };
+float Coeff_55[9] = {0.0014000, 0.0031000, 0.0040000, 0.0083333, 0.0010000, -0.0084667, -0.0050000, -0.0023333, 0 };
+
+float TempVal(unsigned short adcVal) {
+	char i = 0;
+	while (TempDig_list[i]>adcVal && i<=16)
+	    i=i+1;
+	if (i==0)
+		return -20.0;
+	else
+		return Temp_list[i-1] + (adcVal-TempDig_list[i-1])*TempCoeff_list[i-1];
+}
+
+int TorqueVal_m40(float speed) {
+	char i = 1;
+	float TorqueRef;
+	int	tempVal;
+	while (Speed_m40[i]<speed && i<=8)
+		i = i + 1 ;
+	i = i-1;
+	TorqueRef = Torque_m40[i] + (speed - Speed_m40[i]) * Coeff_m40[i];
+	tempVal = TorqueRef * 399.59756097560975609756097560968;   //32767 / 82;
+	//tempVal = TorqueRef * 279.71829268292682926829268292678; // 0.7*32767 / 82;
+	tempVal = 0x8000 - tempVal;
+	return (tempVal);
+}
+
+int TorqueVal_55(float speed) {
+	char i = 1;
+	float TorqueRef;
+	int	tempVal;
+	while (Speed_55[i]<speed && i<=8)
+		i = i + 1 ;
+	i = i-1;
+	TorqueRef = Torque_55[i] + (speed - Speed_55[i]) * Coeff_55[i];
+	tempVal = TorqueRef * 399.59756097560975609756097560968;   //32767 / 82;
+	tempVal = 0x8000 - tempVal;
+	return (tempVal);
+}
+
+void main() {
+
+    timer0_init();
+	timer1_init();
+
+#ifdef _HOST
+    host_init(1.0/FSW);
+#endif
+
+	*(unsigned int*)TIMER1_COUNT = 0;
+	*(unsigned int*)TIMER1_CTRL |= 0x0c0;  //Start timer
+
+	while ((*(unsigned int *)TIMER1_COUNT)<10000000)
+		;
+
+	K_Speed = 500.0*TWOPI/32767.0;
+	K_SpeedRPM = 30000.0/32767.0;
+	K_PosRad = TWOPI/65535.0;
+
+	k_wm_slope = k_SlopeMotoring;
+
+// ***************** Init PLL Being ****************************
+    /*------------------------------------------------------*/
+    /* When PLLEN is off DSP is running with CLKIN clock    */
+    /* source, currently 50MHz or 20ns clk rate.            */
+    /*------------------------------------------------------*/
+    *(int *)PLL_CSR  &= ~CSR_PLLEN;
+
+    /* Reset the pll.  PLL takes 125ns to reset. */
+    *(int *)PLL_CSR  |= CSR_PLLRST;
+
+    /*------------------------------------------------------*/
+    /* PLLOUT = CLKIN/(DIV0+1) * PLLM                       */
+    /* 450    = 50/1 * 9                                    */
+    /*------------------------------------------------------*/
+    *(int *)PLL_DIV0    = DIV_ENABLE + 0;   //ENABLE THE DIV0, / 1 =>  PLL in = 50Mhz
+    *(int *)PLL_MULT    = 9;                //PLL Multiplier: 50Mhz x 9, PLL Out = 450MHz
+    *(int *)PLL_OSCDIV1 = DIV_ENABLE + 4;
+
+    /*------------------------------------------------------*/
+    /* Program in reverse order.                            */
+    /* DSP requires that pheriheral clocks be less then     */
+    /* 1/2 the CPU clock at all times.                      */
+    /*------------------------------------------------------*/
+    *(int *)PLL_DIV3    = DIV_ENABLE + 4;		 //ENABLE THE DIV3, / 5 (90MHZ FOR EMIF) by default
+    *(int *)PLL_DIV2    = DIV_ENABLE + 3;        //ENABLE THE DIV2, / 4 (112.5MHZ FOR PERIPHERALS) by default
+    //  SYSCLK2 rate must be exactly half of SYSCLK1, http://www.ti.com/lit/ds/symlink/tms320c6713b.pdf pag 79
+    *(int *)PLL_DIV1    = DIV_ENABLE + 1;		 //ENABLE THE DIV1, / 2 (225MHZ FOR CORE) by default
+    *(int *)PLL_CSR    &= ~CSR_PLLRST;
+
+    /*------------------------------------------------------*/
+    /* Now enable pll path and we are off and running at    */
+    /* 225MHz with 90 MHz SDRAM.                            */
+    /*------------------------------------------------------*/
+    *(int *)PLL_CSR |= CSR_PLLEN;
+
+    // ***************** Init PLL END ****************************
+
+    // ***************** EMIF Setup ****************************
+    *(int *)EMIF_GCTL     = 0x3320; 		// Gel default is  0x00000068;
+    *(int *)EMIF_CE0      = 0xffffbf33;     // CE0 SDRAM
+    *(int *)EMIF_CE1      = 0x02208802;     // CE1 Flash 8-bit
+    *(int *)EMIF_CE2      = 0x30D3C321;     // FPGA memory space, GEL Default is 0x22a28a22
+    *(int *)EMIF_CE3      = 0x30D3C321;     // same as CE2
+
+    if (Get_Board_Rev == 2)  {
+        *(int *)EMIF_SDRAMCTL = 0x57115000; // SDRAM control (16 Mb)
+    }  else  {
+        *(int *)EMIF_SDRAMCTL = 0x47115000; // SDRAM control (8 Mb)
+    }
+
+    *(int *)EMIF_SDRAMTIM = 0x00000578;     // SDRAM timing (refresh)
+    *(int *)EMIF_SDRAMEXT = 0x000a8529;     // SDRAM Extension register
+
+    // ***************** EMIF Setup End  ****************************
+/*
+     *(unsigned volatile int *)EMIF_GCTL = 0x3320; // EMIF global control
+    //bit0 map;bit1 RBTR8 attivofinche'nonarrivaunprocessoapriorita'piu'alta;bit3 CLK2EN;
+    //bit4 CLK1EN; bit7 NOHOLD; bit8 HOLDA 0:external device owns EMIF; bit9 HOLD 0:external
+    //device requesting EMIF;bit 10 ARDY 0:external device non ready; bit 11 BUSREQ 0:no access
+    //IN QUESTO CASO IL BIT 8 E 9 SONO AD UNO QUINDI NESSUN DISPOSITIVO ESTERNO STA RICHIEDENDO
+     //LA MEMORIA PERIFERICA.    */
+
+
+    CSR = 0x000;   /* global disable maskable interrupts     */
+    IER = 3;       /* disable all interrupts except NMI and reset */
+
+	//Configuring CPLD
+	temp_int = *(unsigned volatile int *)CPLD_UART;
+	temp_int |= 3<<16;                              //McBSP 0 and 1 off board enable
+	*(unsigned volatile int *)CPLD_UART = temp_int;
+
+#ifdef _DEBUG
+    printf("CPLD Conf 00 = %x, 04 = %x\n",*(unsigned volatile int *)0x90080000, *(unsigned volatile int *)0x90080004);
+#endif
+
+
+	//    >>>>>>    Config of McBSP0      <<<<<<<<<<<
+
+        Int32 error;
+
+
+    cfg_mcbsp(&hMcBSP_ch1);
+    cfg_mcbspAD2S1210(&hMcBSP_ch0);
+
+    error = cfg_edmaRx(&hEdma_rx, rxBuffer);
+    if (error) {
+//    	printf("Error initializing Edma Rx \n");
+		*(unsigned volatile int*)IO_PORT = 1;
+    	while(1)
+    		;
+    }
+    error = cfg_edmaTx(&hEdma_tx, txBuffer, 1);
+    if (error) {
+//    	printf("Error initializing Edma Tx \n");
+		*(unsigned volatile int*)IO_PORT = 2;
+    	while(1)
+    		;
+    }
+
+    error = cfg_edmaRxAD2S1210(&hEdma_rxAD2S1210, BufferRxAD2S1210, 10);
+    if (error) {
+		*(unsigned volatile int*)IO_PORT = 3;
+    	while(1)
+    		;
+    }
+    error = cfg_edmaTxAD2S1210(&hEdma_txAD2S1210, BufferTxAD2S1210, 10);
+    if (error) {
+		*(unsigned volatile int*)IO_PORT = 4;
+    	while(1)
+    		;
+    }
+
+    for (temp_int=0;temp_int<BUFFERSIZE;temp_int++) {
+    	txBuffer[temp_int] = 0;
+    	rxBuffer[temp_int] = 0;
+    }
+    rxBuffDone = BUFFERSIZE;
+    ModbusBufferTodoPtr = 0;
+    ModbusBufferEndPtr = 0;
+    ModbusDatalen = 0;
+
+#ifdef _DEBUG
+    printf("Status DMA CNT: %8x SRC = %8x\n", EDMA_RGETH(hEdma_tx, CNT), EDMA_RGETH(hEdma_tx, SRC));
+#endif
+
+    txBuffer[0] = 0xffff; //Prepare to send FF, first byte to have the EDMA working
+    txBuffer[1] = 0xffff;
+
+    EDMA_enableChannel(hEdma_rx);
+    EDMA_enableChannel(hEdma_tx);
+    start_mcbsp(&hMcBSP_ch1);
+    	//end init serial port
+
+#ifdef _DEBUG_dis
+    printf("Program started \n");
+	printf("Status SPCR %8x SRGR %8x PCR %8x XCR %8x RCR %8x MCR %8x RCER %8x XCER %8x\n", *(unsigned volatile int *)McBSP0_SPCR, *(unsigned volatile int *)McBSP0_SRGR,
+			    *(unsigned volatile int *)McBSP0_PCR, *(unsigned volatile int *)McBSP0_XCR, *(unsigned volatile int *)McBSP0_RCR,
+			    *(unsigned volatile int *)McBSP0_MCR, *(unsigned volatile int *)McBSP0_RCER, *(unsigned volatile int *)McBSP0_XCER);
+
+    temp_int2 = EDMA_RGETH(hEdma_tx, CNT);
+    temp_int3 = EDMA_RGETH(hEdma_tx, SRC);
+    printf("Status DMA CNT: %8x SRC = %8x\n", temp_int2, temp_int3);
+#endif
+
+	w_ref = TWOPI*405;
+
+  init_FPGA();
+  init_display();
+  Utemp = 70;  //m=0.53, 88 & 245 degrees are critical
+  PATTERN_NEW = 2;  // Pattern 2 => 2 level, 3 => three level
+
+	*(unsigned int*)TIMER1_COUNT = 0;
+	*(unsigned int*)TIMER1_CTRL |= 0x0c0;  //Start timer
+
+	while ((*(unsigned int *)TIMER1_COUNT)<1000)			//8.9ms
+		;
+
+  //  Init resolver
+  *(unsigned int *)DPR2 |= 0x20;	//out of reset resolver
+  *(unsigned int *)DPR2 |= 7;	    //Configuration mode + 14 bit resolution for Res1(3) Res0(2) A1(1) A0(0)
+
+  BufferTxAD2S1210[0] = 0x88;  // Set LOS Threshold
+  BufferTxAD2S1210[1] = 0x3A;  // 58*38mV=2.2V
+  BufferTxAD2S1210[2] = 0x89;  // Set maximum DOS overrange threshold
+  BufferTxAD2S1210[3] = 0x6b;  // 107*38mV=4.1V
+  BufferTxAD2S1210[4] = 0x8a;  // Set DOS Mismatch Threshold
+  BufferTxAD2S1210[5] = 0x0a;  // 10*38=0.38V mismatch threshold
+  BufferTxAD2S1210[6] = 0x92;  // Control reg
+  BufferTxAD2S1210[7] = 0x75;  // Default + 14 bit
+
+  EDMA_RSETH(hEdma_txAD2S1210, SRC, BufferTxAD2S1210);
+  EDMA_RSETH(hEdma_txAD2S1210, CNT, 8);
+  EDMA_RSETH(hEdma_rxAD2S1210, DST, BufferRxAD2S1210);
+  EDMA_RSETH(hEdma_rxAD2S1210, CNT, 8);
+
+  EDMA_clearChannel(hEdma_rxAD2S1210);
+  EDMA_clearChannel(hEdma_txAD2S1210);
+  EDMA_enableChannel(hEdma_rxAD2S1210);
+  EDMA_enableChannel(hEdma_txAD2S1210);
+
+//  EDMA_setChannel(hEdma_txAD2S1210);
+  start_mcbspAD2S1210(&hMcBSP_ch0);
+
+
+
+	//timer1_init();
+	*(unsigned int*)TIMER1_COUNT = 0;
+	*(unsigned int*)TIMER1_CTRL |= 0x0c0;  //Start timer
+
+	while ((*(unsigned int *)TIMER1_COUNT)<3500)   //Wait for 6u sec for the end of transmission
+		;
+
+	*(unsigned int*)TIMER1_CTRL &= 0xFF7F; //Hold timer
+/*
+  while (1) {
+		printf("Status DMA AD CNT: %8x SRC = %8x\n", EDMA_RGETH(hEdma_rxAD2S1210, CNT), EDMA_RGETH(hEdma_rxAD2S1210, SRC));
+		  EDMA_RSETH(hEdma_txAD2S1210, SRC, BufferTxAD2S1210);
+		  EDMA_RSETH(hEdma_txAD2S1210, CNT, 6);
+		  EDMA_RSETH(hEdma_rxAD2S1210, DST, BufferRxAD2S1210);
+		  EDMA_RSETH(hEdma_rxAD2S1210, CNT, 6);
+		  EDMA_setChannel(hEdma_txAD2S1210);
+  }
+*/
+
+  BufferTxAD2S1210[0] = 0xff;  //Status
+  BufferTxAD2S1210[1] = 0x80;  //Pos H
+  BufferTxAD2S1210[2] = 0x81;  //Pos L
+  BufferTxAD2S1210[3] = 0x82;  //Vel H
+  BufferTxAD2S1210[4] = 0x83;  //Vel L
+  BufferTxAD2S1210[5] = 0xff;  //Status (for dummy byte)
+
+  init_max5478();
+
+  *(unsigned volatile int *)EXTPOL &= 0xFFFFFFFE; // XINT4 triggered on rising edge
+  //**viceversa mettendo il relativo bit ad 1 si cambia l'interrupt sul falling edge
+
+  //**(RRDY=1 ready to read the data in the register) in questo caso esco dal while
+  splash_text_var("ETB 2015 V1.26   ", 14);
+
+  //	*(unsigned int *)DPR1 = (0 | 10);
+  	*(unsigned int *)DPR1 = (0);
+
+  // 2 starting vectors
+  //PWM Enable
+	*(unsigned int *)DPR0 |= 0x00004000;	//PWM Enable
+
+	//timer1_init();
+	*(unsigned int*)TIMER1_COUNT = 0;
+	*(unsigned int*)TIMER1_CTRL |= 0x0c0;  //Start timer
+
+	//Wait for a period equivalent to 5 PWM interrupt periods
+	//This ensures drive is prepared for operation - (2PWM periods should suffice)
+	while ((*(unsigned int *)TIMER1_COUNT)<15000)
+		;
+
+	*(unsigned int*)TIMER1_CTRL &= 0xFF7F; //Hold timer
+
+    *(unsigned int *)DPR9 |= 0x00020000; //enable watchdog new line
+
+    Ts = (double)1.0/FSW;
+    Tseq_Pulses=(float)FPGA_CLOCK/FSW;  //FPGA clock pulses in one modulation period
+    Tseq_2_Pulses=Tseq_Pulses>>1;       //division by 2
+
+
+#ifdef _HOST
+  HPImsg(1);
+#endif
+  delay_err = 0;
+  last_msg = 0;
+  i_err = 0;
+  delay_disp = 0;
+  K_ConvStatus = 0;
+  K_ConvStatusCmd = 0;
+  K_VdcSetRef = 2700;  //VdcRef * 10
+  K_DroopSetVref	= 2700; //V*10
+  K_DroopSetKp = 300;     // k * 100
+
+  RxBufferCountTimeout = BUFFERSIZE;		//To have for sure a wrong value
+  SpeedRPM = 0;
+//  *(unsigned int*)TIMER1_COUNT = 0;
+//  *(unsigned int*)TIMER1_CTRL |= 0x0c0;  //Start timer
+  CountPwmInterrupt = 0;
+
+  ICR = 0xffff;  /* clear all pending interrupts   */
+  IER |= 0x0010;   /* enable ext int 4 */
+  CSR |= 0x1;     /*global interrupt enable*/
+
+	*(unsigned int*)TIMER1_COUNT = 0;
+	*(unsigned int*)TIMER1_CTRL |= 0x0c0;  //Start timer
+
+	//Wait for a period equivalent to 2 PWM interrupt periods
+	//This ensures drive is prepared for operation
+	while ((*(unsigned int *)TIMER1_COUNT)<15000)
+		;
+
+	*(unsigned int*)TIMER1_CTRL &= 0xFF7F; //Hold timer
+
+  init_controller();
+
+
+  while(1){
+
+#ifdef _DEBUG_disabled
+	 	 if (MCBSP_rrdy(hMcBSP_ch0))
+	 		MCBSP_read(hMcBSP_ch0);		//To empty the buffer
+
+	  	MCBSP_write(hMcBSP_ch0, 0xFF);		//Read status
+	  	while (!MCBSP_rrdy(hMcBSP_ch0))
+	  		temp_int1= MCBSP_RGETH(hMcBSP_ch0, SPCR);
+		MCBSP_read(hMcBSP_ch0);				//First dummy byte
+	  	MCBSP_write(hMcBSP_ch0, 0x80);		//Read Position (H)  82 = Velocity
+	  	while (!MCBSP_rrdy(hMcBSP_ch0))
+	  		temp_int1= MCBSP_RGETH(hMcBSP_ch0, SPCR);
+	  	temp_int2 = MCBSP_read(hMcBSP_ch0);		//Read status byte
+	  	MCBSP_write(hMcBSP_ch0, 0x81);		//Read Position (L)  83 = Velocity
+	  	while (!MCBSP_rrdy(hMcBSP_ch0))
+	  		temp_int1= MCBSP_RGETH(hMcBSP_ch0, SPCR);
+	  	temp_int3 = MCBSP_read(hMcBSP_ch0);		//Read D15:D8 position
+	  	MCBSP_write(hMcBSP_ch0, 0x81);
+	  	while (!MCBSP_rrdy(hMcBSP_ch0))
+	  		temp_int1= MCBSP_RGETH(hMcBSP_ch0, SPCR);
+	  	temp_int4 = MCBSP_read(hMcBSP_ch0);		//Read D7:D0 position
+    	printf("Resolver status: %2x, POSITION = %d\n",temp_int2, ((temp_int3&0xff) <<8 | (temp_int4&0xff)));
+#endif
+	  //Handle received data
+	 	 	temp_int = *(unsigned int *)DPR0;
+
+	        temp_int1 = EDMA_RGETH(hEdma_rx, CNT);  //CNT starts from BUFFERSIZE and counts down
+	        if ( rxBuffDone < ((unsigned short) temp_int1) )
+	        	temp_int2 = (rxBuffDone + BUFFERSIZE) - temp_int1; //To fix buffer roll-over
+	        else
+	        	temp_int2 = rxBuffDone - temp_int1;
+
+	        if (temp_int2 == 0x400) {
+	        	temp_int2 = 0;
+	        }
+
+	        if (temp_int1 != RxBufferCountTimeout) {					//There is new data
+#ifdef _DEBUG_dis
+	        	printf("New data %d\n",temp_int2);
+#endif
+	        	CountPwmInterrupt = 0;
+	        	RxBufferCountTimeout = temp_int1;
+	        	*(unsigned volatile int*)IO_PORT |= 1;
+	        } else {
+	        	if (CountPwmInterrupt > 8000) {
+	        		*(unsigned volatile int*)IO_PORT |=8;  //After 0.5s of no rx data resets buffer Rx
+	        	    rxBuffDone = temp_int1;
+	        	    ModbusBufferTodoPtr = 0;
+	        	    ModbusBufferEndPtr = 0;
+	        	    ModbusDatalen = 0;
+	        	    CountPwmInterrupt = 0;
+	        	    temp_int2 = 0;
+	        	    RxBufferCountTimeout = temp_int1;		//To have for sure a wrong value
+	        	    *(unsigned volatile int*)IO_PORT &=0xfffffff7;
+	        	}
+	        }
+
+	        if (temp_int2>=10) {		//10 bytes = 1 byte received
+	        	temp_short = temp_int2 * 0.1;  //ModbusBufferTodoPtr, ModbusBufferEndPtr
+	        	ProcessReceiveData(rxBuffer, BUFFERSIZE - rxBuffDone,  temp_short, rxModbusBuffer, &ModbusBufferEndPtr);
+	        	temp_int3 = temp_short*10;
+	        	if (rxBuffDone < temp_int3) rxBuffDone += BUFFERSIZE;
+	        	rxBuffDone -= temp_int3;
+	        	if (ModbusBufferTodoPtr > ModbusBufferEndPtr)
+	        		ModbusDatalen =  ModbusBufferEndPtr + BUFFERDECODEDSIZE - ModbusBufferTodoPtr;
+	        	else
+	        		ModbusDatalen =  ModbusBufferEndPtr - ModbusBufferTodoPtr;
+	        }
+
+	        if (ModbusDatalen >= 7) {  //7 is min length for modbus header
+
+	        	ModbusFunclen = (rxModbusBuffer[(ModbusBufferTodoPtr+4) & BUFFERDECODEDMASK])<<8 | (rxModbusBuffer[(ModbusBufferTodoPtr+5) & BUFFERDECODEDMASK]); //(unsigned short)(((rxModbusBuffer[ModbusBufferTodoPtr+4])<<8) | ModbusBufferTodoPtr[ModbusBufferTodoPtr+5]);
+	        	if (ModbusDatalen >= ModbusFunclen+6) {
+
+
+	        		tmpMsg[0] = rxModbusBuffer[ModbusBufferTodoPtr];                         // Transaction identifier High
+	        		tmpMsg[1] = rxModbusBuffer[(ModbusBufferTodoPtr+1) & BUFFERDECODEDMASK]; // Transaction identifier Low
+	        		tmpMsg[2] = rxModbusBuffer[(ModbusBufferTodoPtr+2) & BUFFERDECODEDMASK]; // Protocol identifier High
+	        		tmpMsg[3] = rxModbusBuffer[(ModbusBufferTodoPtr+3) & BUFFERDECODEDMASK]; // Protocol identifier Low
+	        		tmpMsg[4] = rxModbusBuffer[(ModbusBufferTodoPtr+4) & BUFFERDECODEDMASK]; // Length High
+	        		tmpMsg[5] = rxModbusBuffer[(ModbusBufferTodoPtr+5) & BUFFERDECODEDMASK]; // Length Low
+	        		tmpMsg[6] = rxModbusBuffer[(ModbusBufferTodoPtr+6) & BUFFERDECODEDMASK]; // Unit identifier
+	        		tmpMsg[7] = rxModbusBuffer[(ModbusBufferTodoPtr+7) & BUFFERDECODEDMASK]; // Function
+	        		ModbusFunc = tmpMsg[7]; //rxModbusBuffer[(ModbusBufferTodoPtr+7) & BUFFERDECODEDMASK];
+
+	        		EDMA_RSETH(hEdma_tx, SRC, txBuffer);  //Transmit result, prepare address to Tx
+
+
+	        		if (ModbusFunc == 2) {                                        //Read discrete inputs
+	        			tmpMsg[5] = 4;
+	        			tmpMsg[8]= 1;
+	        			//tmpMsg[9]= (*(unsigned volatile int*)IO_PORT >>4) & 0xf;
+	        			ProcessTransmitData(txBuffer, 0, tmpMsg, 10);  //Length = 6 + length
+		        		EDMA_RSETH(hEdma_tx, CNT, 100);
+		        		EDMA_setChannel(hEdma_tx);
+	        		} else if ( ModbusFunc == 3) {                                 //Read holding registers
+	        			tempChar[0] = rxModbusBuffer[(ModbusBufferTodoPtr+10) & BUFFERDECODEDMASK];  // Quantity of outputs High
+	        			tempChar[1] = rxModbusBuffer[(ModbusBufferTodoPtr+11) & BUFFERDECODEDMASK];  // Quantity of outputs Low
+	        			tempChar[2] = rxModbusBuffer[(ModbusBufferTodoPtr+9) & BUFFERDECODEDMASK];   // Starting address Low
+						tempChar[3] = 9 + (tempChar[1] << 1);											 // Number of bytes to send
+	        			if (tempChar[0] == 0 && tempChar[1] <=0x7d && tempChar[1] > 0 && (tempChar[2]+tempChar[1]<SIZEMODBUSMEMDATA)) {
+	        				MOD_temp =  3 + (tempChar[1]<<1);
+							tmpMsg[4] = MOD_temp>>8;									//Length High
+							tmpMsg[5] = MOD_temp & 0xff;								//Length Low
+							tmpMsg[8] = tempChar[1]<<1;									//Byte count
+
+							MOD_dataPtr = tempChar[2];
+							MOD_temp = 0;
+							while (tempChar[1]>0) {
+								tmpMsg[9 + MOD_temp]  = MOD_Variables[MOD_dataPtr] >>8;
+								tmpMsg[10 + MOD_temp] = MOD_Variables[MOD_dataPtr] & 0xff;
+								tempChar[1]--;
+								MOD_dataPtr++;
+								MOD_temp +=2;
+							}
+							ProcessTransmitData(txBuffer, 0, tmpMsg, tempChar[3] );  //Length = 6 + length
+							EDMA_RSETH(hEdma_tx, CNT, tempChar[3] * 10);
+			        		EDMA_setChannel(hEdma_tx);
+	        			} else {
+							tmpMsg[4] = 0;												//Length High
+							tmpMsg[5] = 3;												//Length Low
+		        			tmpMsg[7] = tmpMsg[7] | 0x80;
+		        			if (tempChar[0]>0x7d)
+		        				tmpMsg[8] = 3; //Illegal data value
+		        			else
+		        				tmpMsg[8] = 2; //Illegal address
+		        			ProcessTransmitData(txBuffer, 0, tmpMsg, 9);  //Length = 6 + length
+			        		EDMA_RSETH(hEdma_tx, CNT, 90);
+			        		EDMA_setChannel(hEdma_tx);
+#ifdef _DEBUG_dis
+							tempChar[0] = rxModbusBuffer[(ModbusBufferTodoPtr+11) & BUFFERDECODEDMASK];  // Quantity of outputs Low
+							tempChar[1] = rxModbusBuffer[(ModbusBufferTodoPtr+12) & BUFFERDECODEDMASK];  // Byte count
+							tempChar[2] = rxModbusBuffer[(ModbusBufferTodoPtr+13) & BUFFERDECODEDMASK];  // Value[0]
+							printf("Write coils, len = %d dbg = %d %d %d (%p)\n", ModbusFunclen, tempChar[0], tempChar[1], tempChar[2], rxBuffDone );
+#endif
+	        			}
+	        		} else if ( ModbusFunc == 4) {                                 // Read input register
+	        			tmpMsg[5] = 7;											   // Length Low, 3 + 2*Ndata
+	        			tmpMsg[8]=  4;											   // N bytes to follow, 2 * Ndata
+	        			tmpMsg[9]=  0;
+	        			tmpMsg[10]= K_ConvStatus;
+	        			tmpMsg[11]= K_SpeedRead >> 8;
+	        			tmpMsg[12]= K_SpeedRead & 0xff;
+	        			ProcessTransmitData(txBuffer, 0, tmpMsg, 13);  //Length = 6 + length
+		        		EDMA_RSETH(hEdma_tx, CNT, 130);
+		        		EDMA_setChannel(hEdma_tx);
+	        		} else if ( ModbusFunc == 15) {                                 //Write multiple coils
+	        			tmpMsg[5] = 6;
+		        		tmpMsg[8] = 0;
+		        		tmpMsg[9] = 0;
+	        			tmpMsg[10]= 0;
+	        			tmpMsg[11]= 4;
+	        			ProcessTransmitData(txBuffer, 0, tmpMsg, 12);  //Length = 6 + length
+		        		EDMA_RSETH(hEdma_tx, CNT, 120);
+		        		EDMA_setChannel(hEdma_tx);
+	        			//*(unsigned volatile int*)IO_PORT = rxModbusBuffer[(ModbusBufferTodoPtr+13) & BUFFERDECODEDMASK];   // Value
+#ifdef _DEBUG_dis
+	        			tempChar[0] = rxModbusBuffer[(ModbusBufferTodoPtr+11) & BUFFERDECODEDMASK];  // Quantity of outputs Low
+	        			tempChar[1] = rxModbusBuffer[(ModbusBufferTodoPtr+12) & BUFFERDECODEDMASK];  // Byte count
+	        			tempChar[2] = rxModbusBuffer[(ModbusBufferTodoPtr+13) & BUFFERDECODEDMASK];  // Value[0]
+	        			printf("Write multiple coils, len = %d dbg = %d %d %d (%p)\n", ModbusFunclen, tempChar[0], tempChar[1], tempChar[2], rxBuffDone );
+#endif
+	        		} else if ( ModbusFunc == 16) {                                 //Write multiple registers
+	        			tempChar[0] = rxModbusBuffer[(ModbusBufferTodoPtr+8) & BUFFERDECODEDMASK];  // Starting address High
+	        			tempChar[1] = rxModbusBuffer[(ModbusBufferTodoPtr+9) & BUFFERDECODEDMASK];  // Starting address Low
+	        			tempChar[2] = rxModbusBuffer[(ModbusBufferTodoPtr+11) & BUFFERDECODEDMASK]; // Quantity of regs Low  (From 1 to 7b)
+	        			if ((tempChar[0]!=0 || tempChar[1]>=64 ) && (tempChar[2]+tempChar[1]<SIZEMODBUSMEMDATA) ) {			//Write regs >= 64 (0x40)
+							tmpMsg[4] = 0;												//Length High
+							tmpMsg[5] = 6;												//Length Low
+							tmpMsg[8] = tempChar[0];									//Starting address High
+							tmpMsg[9] = tempChar[1];									//Starting address Low
+							tmpMsg[10]= 0; 												//Quantity of regs High, it is always 0: quantity <= 0x7b
+							tmpMsg[11]= tempChar[2];									//Quantity of regs Low 1:0x7b
+							ProcessTransmitData(txBuffer, 0, tmpMsg, 12);  //Length = 6 + length
+							EDMA_RSETH(hEdma_tx, CNT, 120);
+			        		EDMA_setChannel(hEdma_tx);
+							MOD_dataPtr = tempChar[1]+(tempChar[0]<<8);
+#ifdef _DEBUG_dis
+							printf("Write multiple Regs, len = %d (%d Bytes) starting at %d, %d %d\n", tmpMsg[11],rxModbusBuffer[ModbusBufferTodoPtr+12], MOD_dataPtr, rxModbusBuffer[ModbusBufferTodoPtr+13], rxModbusBuffer[ModbusBufferTodoPtr+14]);
+#endif
+							MOD_temp = 0;
+							while(tempChar[2]>0) {
+								tempChar[0] = rxModbusBuffer[(ModbusBufferTodoPtr+13+MOD_temp) & BUFFERDECODEDMASK];
+								tempChar[1] = rxModbusBuffer[(ModbusBufferTodoPtr+14+MOD_temp) & BUFFERDECODEDMASK];
+								MOD_Variables[MOD_dataPtr] = (tempChar[0] <<8)+ tempChar[1];
+								tempChar[2]--;
+								MOD_dataPtr++;
+								MOD_temp +=2;
+							}
+/*
+#ifdef _DEBUG
+							printf(" Values: %d %d %d %d\n",MOD_Variables[MOD_dataPtr-4],MOD_Variables[MOD_dataPtr-3],MOD_Variables[MOD_dataPtr-2],MOD_Variables[MOD_dataPtr-1] );
+#endif   */
+	        			} else {
+							tmpMsg[4] = 0;												//Length High
+							tmpMsg[5] = 3;												//Length Low
+		        			tmpMsg[7] = tmpMsg[7] | 0x80;
+		        			tmpMsg[8] = 2; //Illegal address
+		        			ProcessTransmitData(txBuffer, 0, tmpMsg, 9);  //Length = 6 + length
+			        		EDMA_RSETH(hEdma_tx, CNT, 90);
+			        		EDMA_setChannel(hEdma_tx);
+	        			}
+	        		} else if ( ModbusFunc == 23) {                                 //Read/Write multiple registers
+	        			tempChar[0] = rxModbusBuffer[(ModbusBufferTodoPtr+12) & BUFFERDECODEDMASK];  // Starting W address High
+	        			tempChar[1] = rxModbusBuffer[(ModbusBufferTodoPtr+13) & BUFFERDECODEDMASK];  // Starting W address Low
+	        			tempChar[2] = rxModbusBuffer[(ModbusBufferTodoPtr+15) & BUFFERDECODEDMASK];  // Quantity of W regs Low  (From 1 to 79)
+
+	        			tempChar[4] = rxModbusBuffer[(ModbusBufferTodoPtr+10) & BUFFERDECODEDMASK];  // Quantity of R High
+	        			tempChar[5] = rxModbusBuffer[(ModbusBufferTodoPtr+11) & BUFFERDECODEDMASK];  // Quantity of R Low
+	        			tempChar[6] = rxModbusBuffer[(ModbusBufferTodoPtr+9) & BUFFERDECODEDMASK];   // Starting R address Low
+						tempChar[7] = 9 + (tempChar[1] << 1);									     // Number of bytes to send
+	        			if ((tempChar[4] == 0 && tempChar[5] <=0x7d && tempChar[5] > 0 && (tempChar[6]+tempChar[5]<SIZEMODBUSMEMDATA)) &&   //read conditions
+	        					((tempChar[0]!=0 || tempChar[1]>=64 ) && (tempChar[2]+tempChar[1]<SIZEMODBUSMEMDATA)) ) {  //Write conditions
+	        				MOD_temp =  3 + (tempChar[1]<<1);							//Handling read first
+							tmpMsg[4] = MOD_temp>>8;									//Length High
+							tmpMsg[5] = MOD_temp & 0xff;								//Length Low
+							tmpMsg[8] = tempChar[5]<<1;									//Byte count
+
+							MOD_dataPtr = tempChar[6];
+							MOD_temp = 0;
+							while (tempChar[5]>0) {
+								tmpMsg[9 + MOD_temp]  = MOD_Variables[MOD_dataPtr] >>8;
+								tmpMsg[10 + MOD_temp] = MOD_Variables[MOD_dataPtr] & 0xff;
+								tempChar[5]--;
+								MOD_dataPtr++;
+								MOD_temp +=2;
+							}
+							ProcessTransmitData(txBuffer, 0, tmpMsg, tempChar[7] );  //Length = 6 + length
+							EDMA_RSETH(hEdma_tx, CNT, tempChar[7] * 10);
+			        		EDMA_setChannel(hEdma_tx);
+
+							MOD_dataPtr = tempChar[1]+(tempChar[0]<<8);
+							MOD_temp = 0;
+							while(tempChar[2]>0) {
+								tempChar[0] = rxModbusBuffer[(ModbusBufferTodoPtr+17+MOD_temp) & BUFFERDECODEDMASK];
+								tempChar[1] = rxModbusBuffer[(ModbusBufferTodoPtr+18+MOD_temp) & BUFFERDECODEDMASK];
+								MOD_Variables[MOD_dataPtr] = (tempChar[0] <<8) + tempChar[1];
+								tempChar[2]--;
+								MOD_dataPtr++;
+								MOD_temp +=2;
+							}
+	        			} else {
+							tmpMsg[4] = 0;												//Length High
+							tmpMsg[5] = 3;												//Length Low
+		        			tmpMsg[7] = tmpMsg[7] | 0x80;
+		        			tmpMsg[8] = 2; //Illegal address
+		        			ProcessTransmitData(txBuffer, 0, tmpMsg, 9);  //Length = 6 + length
+			        		EDMA_RSETH(hEdma_tx, CNT, 90);
+			        		EDMA_setChannel(hEdma_tx);
+	        			}
+	        		} else {  //Exception handling
+#ifdef _DEBUG_dis
+	        		printf("Modbus CMD: %d\n", ModbusFunc );
+#endif
+						tmpMsg[4] = 0;												//Length High
+						tmpMsg[5] = 3;												//Length Low
+	        			tmpMsg[7] = tmpMsg[7] | 0x80;
+	        			tmpMsg[8] = 1; //Illegal function
+	        			ProcessTransmitData(txBuffer, 0, tmpMsg, 9);  //Length = 6 + length
+		        		EDMA_RSETH(hEdma_tx, CNT, 90);
+		        		EDMA_setChannel(hEdma_tx);
+	        		}
+
+	        		ModbusBufferTodoPtr = (ModbusBufferTodoPtr+ModbusFunclen+6) & BUFFERDECODEDMASK;  //Offset for next rx
+	        		ModbusDatalen       = ModbusDatalen-ModbusFunclen-6;
+
+	        	}
+	        }
+
+	delay_disp = (delay_disp + 1);
+	if (delay_disp > 20000) {
+		delay_disp = 0;
+		lastTemp=(lastTemp+1)%6;
+		switch (lastTemp) {
+		 	 case 0: TempA1 = TempVal((dpr10>>20) & 0x3ff);
+		 	 	 	 TempMaxNew = 0;
+		 	 	 	 if (TempA1 < 190)
+		 	 	 		 TempMaxNew = TempA1;
+			 	 	 break;
+		 	 case 1: TempB1 = TempVal((dpr10>>10) & 0x3ff);
+		 	 	 	 if (TempB1 > TempMaxNew && TempB1 < 190)
+		 	 	 		 TempMaxNew= TempB1;
+			 	 	 break;
+		 	 case 2: TempA2 = TempVal(dpr10 & 0x3ff);
+		 	 	 	 if (TempA2 > TempMaxNew && TempA2 < 190)
+		 	 	 		 TempMaxNew= TempA2;
+			 	 	 break;
+		 	 case 3: TempB2 = TempVal((dpr11>>20) & 0x3ff);
+		 	 	 	 if (TempB2 > TempMaxNew && TempB2 < 190)
+		 	 	 		 TempMaxNew= TempB2;
+			 	 	 break;
+		 	 case 4: TempA3 = TempVal((dpr11>>10) & 0x3ff);
+		 	 	 	 if (TempA3 > TempMaxNew && TempA3 < 190)
+		 	 	 		 TempMaxNew= TempA3;
+			 	 	 break;
+		 	 default: TempB3 = TempVal(dpr11 & 0x3ff);
+		 	 	 	 if (TempB3 > TempMaxNew && TempB3 < 190)
+		 	 	 		 TempMaxNew= TempB3;
+		 	 	 	 TempMax = TempMaxNew;
+			 	 	 break;
+		}
+	}
+#ifdef _HOST
+    if (message_sent) {
+    	HPImsg(7);
+    	decode_host_msg();
+		message_sent = 0;
+	} else {
+#endif
+		if (delay_err == 0) {
+		   delay_err++;
+	       if (dpr8){
+			  do {
+			     i_err++;
+			  }  while(i_err<32 && !(dpr8 & 1<<i_err));
+			  if (i_err >= 34) {	//Change here to increase nr of debug messages when error
+			     i_err = 0;
+			     while(i_err<32 && !(dpr8 & 1<<i_err)) {			//Find again first error
+					 i_err++;
+				  }
+			  }
+	  	    }  //if DPR8
+	  	    else
+	        {
+	           last_msg++;
+	           if (last_msg>=2)
+	        	   last_msg = 0;
+	        }
+		} //if (delay_err == 0)
+/*
+#ifdef _DEBUG
+		if (dpr1 != dpr1old || dpr10 != dpr10old || dpr11 != dpr11old) {
+			dpr1old = dpr1;
+			dpr10old = dpr10;
+			dpr11old = dpr11;
+			printf("ReadyBits: %p, Ta1=%6.2f Tb1=%6.2f, Ta2=%6.2f, Tb2=%6.2f, Ta3=%6.2f, Tb3=%6.2f\n",(dpr1>>16) & 0xfff, TempVal((dpr10>>20) & 0x3ff), TempVal((dpr10>>10) & 0x3ff),TempVal(dpr10 & 0x3ff), TempVal((dpr11>>20) & 0x3ff), TempVal((dpr11>>10) & 0x3ff),TempVal(dpr11 & 0x3ff));
+		}
+
+#endif  */
+		if (delay_disp == 0) {
+		    delay_err  = (delay_err + 1)  % 6;
+			if (dpr8){
+				switch (i_err){
+			    	case 0: display_str('I','m','a','x'); break;  // Max current
+			    	case 1: display_str('!','R','d','y'); break;  // Ready bits
+				    case 2: display_str('T','e','m','p'); break;  // Temperature trip
+				    case 3: display_str('R','e','s','l'); break;  // Resolver trip
+				    case 4: display_str('R','s','B','f'); break;  // Resolver buffer
+				    case 5: display_str('S','p','e','d'); break;  // Speed
+				    case 6: display_str('V','d','c','L'); break;  // Vdc low
+				    case 7: display_str('E','m','S','t'); break;
+					case 8: display_str('F','E','m','p'); break;
+					case 9: display_str('W','t','d','g'); break;
+					case 10: display_str('T','I','l','1'); break;
+					case 11: display_str('T','I','l','2'); break;
+					case 12: display_str('T','I','l','3'); break;
+					case 13: display_str('-','H','T','4'); break;
+					case 14: display_str('-','H','T','5'); break;
+					case 15: display_str('-','H','T','6'); break;
+					case 16: display_str('T','V','i','n'); break;
+					case 17: display_str('T','V','a','b'); break;
+					case 18: display_str('T','V','b','c'); break;
+					case 19: display_str('V','d','c','H'); break;
+					case 20: display_str('V','d','c','L'); break;
+					case 21: display_str('F','l','t','!'); break;
+					case 22: display_str('h','t','2','2'); break;
+					case 23: display_str('F','F','u','l'); break;
+					case 24: display_str('h','t','2','4'); break;
+					case 25: display_str('h','t','2','5'); break;
+					case 26: display_str('h','t','2','6'); break;
+					case 27: display_str('h','t','2','7'); break;
+					case 28: display_str('h','t','2','8'); break;
+					case 29: display_str('h','t','2','9'); break;
+					case 30: display_str('h','t','3','0'); break;
+					case 31: display_str('h','t','3','1'); break;
+					case 32: display_int(Res_Last_Error); break;  //Res_Last_Error
+					case 33: display_int(TempMax); break;
+					default: display_int(i_err);
+				} //switch
+			} else {
+			   // if (last_msg == 0)
+			        //display_chars(next_message);
+			  //  	display_varInt(SpeedRPM);
+			  //  else
+			//	if (DriveOn == 0)
+			//		display_str('O','f','f',' ');
+			//	else if ((K_ConvStatus & 3) == 3)
+			//		display_int(K_VdcRef*0.1);
+			//	else
+					//display_varInt(SpeedRPM);
+			//	  display_float(PositionRad);
+			//	display_float(theta);
+				if (DriveOn == 0)
+					//if (last_msg == 0)
+					//	display_float(PositionRad*kRadtoGrad);
+					//else
+					//	display_float(Vdc);
+					//display_int(((dpr1 ^ 0xf00) >>8) & 0xf);
+					display_int(TempMax);
+				else
+				  display_float(SpeedRPM);
+			}
+		} // delay_disp == 0
+#ifdef _HOST
+	} //if (!message_sent)
+#endif
+  } //while (1)
+} //End Main
+
+void timer0_init(void)
+{
+	*(unsigned volatile int *)TIMER0_CTRL &= 0xFF3F; /* hold the timer, Hold and Go = 0        */
+	*(unsigned volatile int *)TIMER0_CTRL |= 0x200;  /* use internal clock, 1/2 of SYSCLK2 (115MHz/2)  =  17.39ns     */
+    *(unsigned volatile int *)TIMER0_CTRL &= 0xFEFF; /* pulse mode, CP=0 */
+//    *(unsigned volatile int *)TIMER0_CTRL |= 0x1;    /* GPIO enable as timer out */
+	*(unsigned volatile int *)TIMER0_PRD   = 0xFFFFFFFF; /* set period to max */
+}
+
+
+void timer1_init(void)
+{
+	*(unsigned volatile int *)TIMER1_CTRL &= 0xFF3F;/* hold the timer        */
+	*(unsigned volatile int *)TIMER1_CTRL |= 0x200;  /* use internal clock, 1/2 of SYSCLK2 (115MHz/2)  =  17.39ns     */
+    *(unsigned volatile int *)TIMER1_CTRL &= 0xFEFF; /* pulse mode */
+	*(unsigned volatile int *)TIMER1_PRD   = 0xFFFFFFFF; /* set period to max */
+}
+
+void init_FPGA(void)
+{
+
+	*(unsigned int*)TIMER1_COUNT = 0;
+	*(unsigned int*)TIMER1_CTRL |= 0x0c0;  //Start time
+	while ((*(unsigned int *)TIMER1_COUNT)<15000000)  //260ms
+				; //wait time
+	//Emulate power on reset
+	*(unsigned int *)DPR0 = 0xFFFFFFF7;//set Power_on_reset low in FPGA
+	*(unsigned int *)DPR0 |= 0x00000008;//set Power_on_reset high in FPGA to reset DSP and reset TIBBO
+
+	*(unsigned int *)DPR0 |= 0x000000C0;//reset and MD high for tibbo
+
+	*(unsigned volatile int*)TIMER1_CTRL |= 0x0c0;  //Start timer 1
+	while ((*(unsigned volatile int *)TIMER1_COUNT)<1000000)
+		; //wait time
+    *(unsigned volatile int *)TIMER1_CTRL &= 0xFF3F;  /* hold the timer */
+
+	//PWM Reset
+	*(unsigned int *)DPR0 |= 0x00008000;
+	*(unsigned int *)DPR0 &= 0xFFFF7FBF;	//remove PWM reset and Tibbo reset (MD stays high)
+
+	*(unsigned int *)DPR0 &= 0xFFFFFFDF;  //Reset to gate drives, active low
+	*(unsigned int *)DPR0 &= 0xFFFFFFEF;  //Disable PWM
+
+	//Set PWM period: 0xFCE0 = 0xFFFF- (4000-1) => 50MHz/4000 = 12.5kHz
+	//Set PWM period: 0xEC78 = 0xFFFF- (5000-1) => 50MHz/5000 = 10.0kHz
+	temp_uint = ((float)FPGA_CLOCK/FSW)-1;
+	temp_uint = (unsigned)(0x0000FFFF - temp_uint)<<16;
+	*(unsigned int *)DPR0 |= temp_uint;
+	//*(unsigned int *)DPR0 |= (unsigned)(0x0000FFFF - ((int)((float)FPGA_CLOCK/f_switch)-1))<<16;
+	 temp_int = *(unsigned int *)DPR0;
+
+//	 *(unsigned int *)DPR12=0xFFFFFF00;// all hardware trip are disable
+	 temp_uint = 0xff800000;   //Disable HT 15:23 that are not used
+	 temp_uint |= 0x001CE000;   //Disable HT for a2d not used
+
+//	 temp_uint |= 0x00000200;   //Disable HT for watchdog
+//	 temp_uint |= 0x00000100;   //Disable HT for fifo empty
+//	 temp_uint |= 0x00001c00;   //Disable HT for Ia, ib, ic
+//	 temp_uint |= 0x00030000;   //Disable HT for VdcH and VdcL
+	 temp_uint |= 0x00200000;   //Disable HT for fault
+//	 temp_uint |= 0x00400000;   //Disable HT for fifo full
+
+	 *(unsigned int *)DPR12 = temp_uint;
+
+//    *(unsigned int *)DPR12=0xff408100;// Enable all useful trips
+//    *(unsigned int *)DPR12=0xffdffd00;// Enable fault & watchdog
+//    *(unsigned int *)DPR12=0xffdffc00;// Enable fault, watchdog & fifo alm. empty
+//    *(unsigned int *)DPR12=0xff5ffc00;// Enable fault, watchdog, fifo full & fifo alm. empty
+//      *(unsigned int *)DPR12=0xff5ffe00;// NO WATCHDOG, Enable fault, fifo full & fifo alm. empty
+
+    *(unsigned int *)DPR2 &= 0xFFFFFFDF;		//reset resolver
+	*(unsigned int *)DPR0 |= 0x00000800;	//set to pwm driven A2D
+   	*(unsigned int *)DPR0  &= 0xFFFFFEFF;   //Enable Ready
+
+	*(unsigned int *)DPR0 |= 0x00000200;	//Enable reset wile MEN = 1
+
+	//Set Watchdog Period: 0xE2B4 = 0xFFFF -7500 => ~1.5*PWM period
+	*(unsigned int *)DPR9 = 0xFFFF - (int)((FPGA_CLOCK/FSW)*1.5);
+
+	*(unsigned int *)DPR8 = 0;			  //Reset Hardware Trip
+    *(unsigned int *)DPR2 |= 0x20;		  //no reset resolver
+
+ 	*(unsigned int *)DPR0 |= 0x000010;    //Enable PWM Out
+
+}
+
+void init_controller(void)
+{
+
+	  *(unsigned int *)DPR8 &= 0xFFFFFF00;
+		reset_controller();
+		DriveOn=0;
+		*(unsigned int *)DPR0 &= 0xFFFFFFDF;	//Reset trips
+		*(unsigned int *)DPR0 |= 0x00000020;
+		K_ConvStatus = 0;
+
+
+}
+
+void reset_controller(void)
+{
+	tempIf = 0;
+	DriveOn=0;
+ 	//wPLL_flt = 0;  //start-up
+	//wPLL = TWOPI*400;
+
+	//PWM Reset
+//*(unsigned int *)DPR0 |= 0x00008000;
+//	*(unsigned int *)DPR0 &= 0xFFFF7FFF;
+
+
+  	//PWM Reset
+//	*(unsigned int *)DPR0 |= 0x00008000;
+//	*(unsigned int *)DPR0 &= 0xFFFF7FFF;
+
+// 	*(unsigned int *)DPR1 = (((int)(FPGA_CLOCK/FSW) - 16 )); // 16 ck meno di un ciclo completo di PWM
+//    *(unsigned int *)DPR1 = (0); // PVT=0 => should last whole period
+
+  //id current loop
+  id_ref = 0;
+  id_err = 0;
+  pre_id_err = 0;
+  id_pre_int = 0.0f;  		//previous integrator value of d-axis controller
+  vd_tmp_output = 0.0f;      //temp vd output value of d-axis controller
+  id_int_new = 0.0f;         //new integrater value of d-axis controller
+
+
+  //iq current loop
+  iq_ref = 0;       //iq_ref in the motoring mode
+ // static double iq_tmp=0.0f;
+  iq_tmp_ref1 = 0;
+ // static double iq_ref1=0.0f;      //iq_ref in the generating mode
+  iq_err = 0;
+  pre_iq_err = 0;
+  iq_pre_int = 0;  			//previous integrator value of q-axis controller
+  vq_tmp_output = 0;      //temp vd output value of q-axis controller
+  iq_int_new = 0;         //new integrater value of q-axis controller
+
+
+  //speed loop
+  wm_err = 0;
+  pre_wm_err = 0;
+  wm_pre_int = 0; 		 //previous integrator value of speed-loop controller
+  wm_tmp_output = 0;      //temp vd output value of speed-loop controller
+  wm_int_new = 0;         //new integrater value of speed-loop controller
+
+
+  //Edc loop
+  vs_err = 0;
+  pre_vs_err = 0;
+  vs = 0;
+  vs_pre_int = 0;  //previous integrator value of Edc-loop controller
+  vs_tmp_output = 0;      //vs_tmp_output is the temprary id_ref value
+  vs_int_new = 0;         //new integrater value of Edc-loop controller
+
+  vs_out = 0;
+  pre_idc_err = 0;
+
+  //   Init filter for Vdq   //
+  Vdq = 0;
+  Vdq_k1 = 0;
+  Vdq_k2 = 0;
+  Vdq_f = 0;
+  Vdq_fk1 = 0;
+  Vdq_fk2 = 0;
+
+  idc_ref = 0;
+  Edc_tmp = 0;
+
+  idc_pre_int = 0;
+  Res_Last_Error = 0;
+  delayResolverBuffError = 0;
+  *(unsigned int *)DPR9 &= 0xF7FFFFFF;  // 0 for output 3 to enable drive
+
+
+ //   Init filter for Edc   //
+Edc = 0.0;
+Edc_k1 = 0.0;
+Edc_k2 = 0.0;
+Edc_fk1 = 0.0;
+Edc_fk2 = 0.0;
+
+ ia_trip = 0;
+ ib_trip = 0;
+ ic_trip = 0;
+ overcurrentDelay = 0;
+
+ theta_est=3.0*PositionRad;
+ theta_est= theta_est-((int)(theta_est*I_PI))*TWOPI;
+ theta_est1=theta_est;
+ theta_err=0;
+ theta_err1=0;
+ wr_est1=0.314159*SpeedRPM;
+ wr_est=wr_est1;
+ wr_int_out1=wr_est1;
+ wr_int_out=wr_int_out1;
+
+ //wr_int_out1=0.0;
+ // wr_int_out=0.0;
+ //   Init filter for wm   //
+ wm = 0.0;
+ wm_k1 = 0.0;
+ wm_k2 = 0.0;
+ wm_fk1 = 0.0;
+ wm_fk2 =  0.0;
+
+ //K_Edc=3.0;
+ //Edc0=270.0;
+
+ K_droop=1.0588;
+}
+
+
+/*-------------------------------------------------------------------------*/
+/* pwm0_isr() - interrupt service routine generating PWM                   */
+/*-------------------------------------------------------------------------*/
+
+interrupt void pwm_isr(void)    //42us
+
+{
+	 // Start timing
+	 *(unsigned int*)TIMER0_COUNT = 0;
+	 *(unsigned int*)TIMER0_CTRL |= 0x0c0;
+
+//	 *(unsigned int *)DPR9 |= 0x01000000;  //Digital output = 1     <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	EDMA_RSETH(hEdma_txAD2S1210, SRC, BufferTxAD2S1210);  //Resolver stuff
+    EDMA_RSETH(hEdma_txAD2S1210, CNT, 6);
+	EDMA_RSETH(hEdma_rxAD2S1210, DST, BufferRxAD2S1210);
+    EDMA_RSETH(hEdma_rxAD2S1210, CNT, 6);
+	EDMA_setChannel(hEdma_txAD2S1210);				// After 4us everything is done
+
+	//delaySetpoint = (delaySetpoint + 1 ) & 0x3;
+
+	delaySetpoint++;
+
+	if (delaySetpoint == 0) {
+#ifdef __DisplaySpeed
+		if (SpeedRPM >0) {
+			*(unsigned int *)DPR10 = (unsigned short)SpeedRPM;
+		} else {
+			*(unsigned int *)DPR10 = (unsigned short)(-SpeedRPM);
+		}
+#else
+		if (DriveOn) {
+			//*(unsigned int *)DPR10 = TorqueVal_55(SpeedRPM);
+			*(unsigned int *)DPR10 = TorqueVal_m40(SpeedRPM);
+		} else {
+			*(unsigned int *)DPR10 = 0x7fff;
+		}
+#endif
+		// 	IOLedStatus = *(unsigned volatile int*)IO_PORT & 0xf;
+	}
+
+dpr0 = *(unsigned int *)DPR0;
+dpr1 = *(unsigned int *)DPR1;
+dpr10 = *(unsigned int *)DPR10;
+dpr11 = *(unsigned int *)DPR11;
+
+
+ //   ~~~~~~~~~~~~~~~  Emergency off here  ~~~~~~~~~~~~~~~
+/*
+if ((dpr1 & 0x800) != 0) {		//Emergency off
+#ifdef __MOTORING
+	*(unsigned int *)DPR8 |= 0x0080;
+   	DriveOn=0;
+//  *(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out
+   	*(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+#else
+   	DriveOn = 0;
+#endif
+} */
+//   ~~~~~~~~~~~~~~~  Emergency off end   ~~~~~~~~~~~~~~~
+
+CountPwmInterrupt++;		//Used to generate timeout for Modbus Rx buffer
+if (Motoring == 1 && Idling == 0) {
+	if (wm_ref_now < wm_ref) {
+		if ((wm_ref_now + k_wm_slope) > wm_ref)
+			wm_ref_now = wm_ref;
+		else
+			wm_ref_now += k_wm_slope;
+	} else if (wm_ref_now > wm_ref) {
+		if ((wm_ref_now - k_wm_slope) < wm_ref)
+			wm_ref_now = wm_ref;
+		else
+			wm_ref_now -= k_wm_slope;
+	}
+} else
+	wm_ref_now = wm;
+
+//   *(unsigned int *)DPR9 |= 0x02000000;  //Digital output = 2   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+   PATTERN = PATTERN_NEW;
+   statusBits = 0;		//Reset bits to calculate them again
+
+	while((*(unsigned int *)DPR1)&0x00000080)
+	;//wait until A2D is complite (ABY=1)
+
+ //trigger the A2D again due to their delay
+ *(unsigned int *)DPR0&=0xFFFFF7FF;//SeT THE A2D BY DSP trigger (ADM=0)
+ *(unsigned int *)DPR0|=0x00000004;//start the A2D (AST=1)
+ //WE WILL WAIT ~1.5usec
+
+#ifdef _HOST_DISABLED
+  DataSetting();   //Never used, so removed
+#endif
+
+ if ((((dpr1>>16) & 0xfff) != 0xfff) & DriveOn) {  //Ready bits of gate drives, 4960 = data every 100ms, 3.1 x 16kHz/100ms
+	 if ((delayFault>4960) && (((dpr1>>16) & lastFault) !=0 )) {
+		*(unsigned int *)DPR8 |= 0x0002;
+	   	DriveOn=0;
+		//*(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out
+	   	*(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+	 } else {
+		 if (((dpr1>>16) & lastFault) !=0 )
+			 delayFault++;
+		 else
+			 delayFault = 1;
+		 lastFault |= ((dpr1>>16) & 0xfff);
+	 }
+ } else {
+	 delayFault = 0;
+	 lastFault = 0;
+ }
+
+ if (TempMax > 120.0) {							//Max temperature trip, 1 sec delay
+	 if (OverTempDelay < FSW) {
+		 OverTempDelay++;
+	 } else {
+		*(unsigned int *)DPR8 |= 0x0004;
+	   	DriveOn=0;
+		// *(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out
+		*(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+	 }
+ } else {
+	 OverTempDelay = 0;
+ }
+
+ if (Res_Status != 0) {							//Resolver trip
+	 Res_Last_Error |= Res_Status;
+	if (delayResolverError>5) {
+		*(unsigned int *)DPR8 |= 0x0008;
+	   	DriveOn=0;
+		//*(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out
+	   	*(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+	} else {
+		delayResolverError ++;
+	}
+ } else {
+	 delayResolverError = 0;
+ }
+
+ if (K_VdcSetRef < 2500)
+	 K_VdcRef = 2500;
+ else if(K_VdcSetRef > 2900)
+	 K_VdcRef = 2900;
+ else
+	 K_VdcRef = K_VdcSetRef;
+
+ if (K_DroopSetVref < 2400)
+	 K_DroopVref = 2400;
+ else if(K_DroopSetVref > 3000)
+ 	 K_DroopVref = 3000;
+ else
+	 K_DroopVref = K_DroopSetVref;
+
+ if (K_DroopSetKp < 0)
+	 K_DroopKp = 0;
+ else if(K_DroopSetKp > 800)
+	 K_DroopKp = 800;
+ else
+	 K_DroopKp = K_DroopSetKp;
+
+
+
+ while((*(unsigned int *)DPR1)&0x00000080)
+	;//wait until A2D is complite (ABY=1)
+ //now we can read the data in the memory of the FPGA
+
+ *(unsigned int *)DPR0|=0x00000800;//SeT THE A2D BY interrupt trigger (ADM=1)
+
+// *(unsigned int *)DPR9 |= 0x04000000;  //Digital output = 3   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+ *(unsigned int *)DPR9 |= 0x00010000; // service
+
+ adc0 = *(unsigned int *)DPR3;
+ adc1 = (adc0&0x3FFF0000)>>16;
+ adc0 &= 0x3FFF;
+
+ adc2 = *(unsigned int *)DPR4;
+ adc3 = (adc2&0x3FFF0000)>>16;
+ adc2 &= 0x3FFF;
+
+ adc4 = *(unsigned int *)DPR5;
+ adc5 = (adc4&0x3FFF0000)>>16;
+ adc4 &= 0x3FFF;
+
+ adc6 = *(unsigned int *)DPR6;
+ adc7 = (adc6&0x3FFF0000)>>16;
+ adc6 &= 0x3FFF;
+
+ adc8 = *(unsigned int *)DPR7;
+ adc9 = (adc8&0x3FFF0000)>>16;
+ adc8 &= 0x3FFF;
+
+ dpr0 = *(unsigned int *)DPR0;
+ dpr1 = *(unsigned int *)DPR1;
+ //dpr2 = *(unsigned int *)DPR2;
+ dpr8 = *(unsigned int *)DPR8;
+
+ ConverterOn = ((dpr1 ^ 0xf00) & 0x400)>>10;
+ Motoring = ((dpr1 ^ 0xf00) & 0x100)>>8;
+ Generating = ((dpr1 ^ 0xf00) & 0x200)>>9;
+
+if ((ConverterOn != 1) || ((K_ConvStatusCmd & 0x10) != 0x0) || dpr8) {   // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+//  if(( (*(unsigned volatile int *)IO_PORT & 0x10) != 0x00) || dpr8) {   // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    DriveOn=0;
+	//*(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out => All output = 1
+	*(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+	Motoring = 0;
+ } else if((!DriveOn) && (dpr8 == 0) && (ConverterOn == 1)) {
+	wm_ref = k_SpeedMotoring;
+	wm_ref_now = wm;
+   	reset_controller();
+//   	*(unsigned int *)DPR0  |= 0x20;  //Reset trips = 1 by default, active low
+//   	*(unsigned int *)DPR0  &= 0xFFFFFEDF;  //No reset trips, enable Ready
+
+   	*(unsigned int *)DPR0  |= 0x10;  //Master Enable = 1 by default, active high
+
+   	DriveOn=1;
+ 	*(unsigned int *)DPR0 |= 0x000010; //Enable PWM Out and disable reset
+ }
+
+  //Check for reset trips - if reset pressed and enable switch off, reset software trips
+  //This operation is performed after checking for the enable. Later on during the same interrupt
+  //execution, it is confirmed whether the conditions generating the trip have been cleared or otherwise.
+  //If the cause of the trip has not been cleared yet as might be the case with overtemperature, the trip
+  //is set again and given the order of the code, the drive will not be enabled under these circumstances.
+
+if((K_ConvStatusCmd & 0x10) != 0 ) {  //reset pressed
+//if (( *(unsigned volatile int *)IO_PORT & 0x20) == 0x00) {
+	reset_controller();
+	DriveOn=0;
+	*(unsigned int *)DPR0 &= 0xFFFFFFDF;	//Reset trips, active low
+	*(unsigned int *)DPR0 |= 0x00000020;
+	*(unsigned int *)DPR8 = (dpr8 & 0xFFFFFF00); //Reset sw trips
+/*	*(unsigned volatile int *)IO_PORT = 0;   */
+ }
+
+//  	*(unsigned int *)DPR9 |= 0x00010000; // service
+
+
+// Currents positive when going out the converter
+ ia=(float)(Off_ADCI1 - adc0)*Gain_ADCI1_1;
+ ib=(float)(Off_ADCI2 - adc1)*Gain_ADCI2_1;
+ ic=(float)(Off_ADCI3 - adc2)*Gain_ADCI3_1;
+/* Current positive when going into the converter
+ia=(float)(adc0 - Off_ADCI1)*Gain_ADCI1_1;
+ib=(float)(adc1 - Off_ADCI2)*Gain_ADCI2_1;
+ic=(float)(adc2 - Off_ADCI3)*Gain_ADCI3_1;  */
+
+// Scale dc voltage adc results
+V_DC_L=(float)(Off_ADCVdcL - adc7)*Gain_ADCVdcL_1;
+V_DC_H=(float)(Off_ADCVdcH - adc6)*Gain_ADCVdcH_1;
+// V_DC_H = 15.0; //135;										/// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+// V_DC_L = 15.0;										/// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+Vdc = V_DC_H + V_DC_L;
+
+
+ // trip for overcurrent
+
+if ((ia>IMAX) || (-ia>IMAX) || (ib>IMAX) || (-ib>IMAX) || (ic>IMAX) || (-ic>IMAX)) {   ///////////////////  current tripssssssssssssssssssssssss
+	itot = ia+ib+ic;
+	i_max = ia;
+	if (ib > i_max || ib < -i_max)
+		i_max = ib;
+	if (ic > i_max || ic < -i_max)
+		i_max = ic;
+
+	if ((itot<30 && itot>-30) || overcurrentDelay >0) {	//currents balanced, otherwise could be a glitch
+		if (i_max > 500 || overcurrentDelay >4) {
+			ia_trip = ia;
+			ib_trip = ib;
+			ic_trip = ic;
+
+			*(unsigned int *)DPR8 |= 0x0001;
+			DriveOn=0;
+			//*(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out
+			*(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+		} else {
+			overcurrentDelay++;
+		}
+	} else {
+		overcurrentDelay++;  //if glitch on one current
+	}
+} else {
+	overcurrentDelay = 0;
+}
+
+ ///   ********* Reading DMA counter, should both be zero by now
+tempUshort = 0;
+do {
+ temp_irqInt1 = EDMA_RGETH(hEdma_rxAD2S1210, CNT);
+ temp_irqInt2 = EDMA_RGETH(hEdma_txAD2S1210, CNT);
+ tempUshort ++;
+} while (tempUshort < 20 && ((temp_irqInt1 != 0) || (temp_irqInt2 != 0)));
+
+ if ((temp_irqInt1 != 0) || (temp_irqInt2 != 0 )) {
+	 if (delayResolverBuffError > 10) {
+ 	*(unsigned int *)DPR8 |= 0x0010;
+    DriveOn=0;
+    //*(unsigned volatile int *)IO_PORT = 2;
+    *(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+ 	//*(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out
+	 } else {
+		 delayResolverBuffError ++;
+		 Res_position += DeltaPos;		//estimate position, just in case
+	 }
+ } else {
+	 tempUshort = (BufferRxAD2S1210[2]<<8 | BufferRxAD2S1210[3]) & 0xfffc;
+	 Res_speed = (BufferRxAD2S1210[4]<<8 | BufferRxAD2S1210[5]) & 0xfffc;
+	 Res_Status = BufferRxAD2S1210[1];
+	  EDMA_clearChannel(hEdma_rxAD2S1210);
+	  EDMA_clearChannel(hEdma_txAD2S1210);
+	  EDMA_enableChannel(hEdma_rxAD2S1210);
+	  EDMA_enableChannel(hEdma_txAD2S1210);
+
+	 DeltaPos = tempUshort - Res_position;
+	 Res_position = tempUshort;
+	 delayResolverBuffError = 0;
+ }
+
+ if ((SpeedRPM>K_MaxSpeedRPM) || (SpeedRPM < -1000)) {
+	 	*(unsigned int *)DPR8 |= 0x0020;
+	    DriveOn=0;
+	    //*(unsigned volatile int *)IO_PORT = 2;
+	    *(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+	 	//*(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out
+ }
+
+ if (Vdc < 140.0) {
+	 	*(unsigned int *)DPR8 |= 0x0040;
+	    DriveOn=0;
+	    *(unsigned int *)DPR0 |= 0x0000100; // Disable Ready signal
+ }
+
+
+// SpeedW = (Res_position - Res_positionOld) * K_PosRad * FSW;
+ //Res_positionOld = Res_position;
+
+// Position calculation with Offset adjustment
+ PositionRad = (K_PosRad * Res_position) + 0.789409859; //1.832310115; //To have 0 degrees with Valpha=10 and Vbeta = 0;
+
+ wm1 = K_Speed * Res_speed;
+ SpeedRPM = K_SpeedRPM * Res_speed;
+ wm = 1.533586393e-05*wm1+3.067172786e-05*wm_k1+1.533586393e-05*wm_k2+1.988894622e+00*wm_fk1-9.889559652e-01*wm_fk2;  //flt 20Hz, damp = 0.707, fsw=16000Hz
+
+ wm_fk2 = wm_fk1;
+ wm_fk1 = wm;
+ wm_k2 = wm_k1;
+ wm_k1 = wm1;
+
+ //PositionRad = TWOPI - PositionRad -0.79-0.5*PI_2;
+// Position should be -90 with Vbeta, 180 with Valpha
+
+ if (PositionRad < 0.0) {
+	 PositionRad = PositionRad + TWOPI;
+ }
+
+ if (PositionRad > TWOPI) {
+	 PositionRad = PositionRad - TWOPI;
+ }
+
+#ifdef _DEBUG_dis
+
+ printf("Status DMA CNT: %8x SRC = %8x OPT = %8x EER = %8x\n", EDMA_RGETH(hEdma_rxAD2S1210, CNT), EDMA_RGETH(hEdma_rxAD2S1210, SRC), EDMA_RGETH(hEdma_rxAD2S1210, OPT), EER);
+
+ printf("Status SPCR %8x SRGR %8x PCR %8x XCR %8x RCR %8x MCR %8x RCER %8x XCER %8x\n", *(unsigned volatile int *)McBSP0_SPCR, *(unsigned volatile int *)McBSP0_SRGR,
+			    *(unsigned volatile int *)McBSP0_PCR, *(unsigned volatile int *)McBSP0_XCR, *(unsigned volatile int *)McBSP0_RCR,
+			    *(unsigned volatile int *)McBSP0_MCR, *(unsigned volatile int *)McBSP0_RCER, *(unsigned volatile int *)McBSP0_XCER);
+#endif
+
+ debug1 = temp_irqInt1;
+ debug2 = DeltaPos;
+ debug3 = Res_Status;
+ /* >>>>   AD2S1210 Fault register [0xff] bit definition:      <<<<              */
+ /*  D7 :  Sine/cosine inputs clipped                                            */
+ /*  D6 :  Sine/cosine inputs below LOS threshold                                */
+ /*  D5 :  Sine/cosine inputs exceed DOS overrange threshold                     */
+ /*  D4 :  Sine/cosine inputs exceed DOS mismatch threshold                      */
+ /*  D3 :  Tracking error exceeds LOT threshold                                  */
+ /*  D2 :  Velocity exceeds maximum tracking rate                                */
+ /*  D1 :  Phase error exceeds phase lock range                                  */
+ /*  D0 :  Configuration parity error                                            */
+
+
+/*
+  if (Vdc>VDCMAX) {
+  	*(unsigned int *)DPR8 |= 0x0008;
+   	DriveOn=0;
+	*(unsigned int *)DPR0 &= 0xFFFFFFEF; //Disable PWM Out
+  }
+*/
+///THIS FAR 12.8us  (out of 62 maximum available)
+
+
+ theta = (PositionRad*PolePairs);
+
+//second order filter
+ w_ffn=w_ffn+(w_fn-w_ffn)*3.9250e-05; //0.628*Ts
+ Vdc_OUT_1=Vdc_OUT_1+(Vdc-Vdc_OUT)*w_ffn*w_ffn*Ts; //888.2644=w_fn*w_fn*Ts
+ Vdc_OUT=Vdc_OUT+(Vdc_OUT_1-1.414*w_ffn*Vdc_OUT)*Ts; //5330.7=w_fn*1.414
+ Edc = Vdc_OUT;
+ //Edc_rf=Edc;
+ //Edc_rf = Edc_rf + (Vdc-Edc_rf)*2.0e-03; //100Hz filter used in flux weakening
+
+
+ Edc_fk2 = Edc_fk1;
+ Edc_fk1 = Edc;
+ Edc_k2 = Edc_k1;
+ Edc_k1 = Vdc;
+
+
+// if (SpeedRPM < 12000.0 && SpeedRPM > -12000.0) {
+//	 Edc = Vdc;
+// }
+
+
+
+// #####################################################
+// ###############  Begin TAO's code  ##################
+//         Currents going into the converter
+// #####################################################
+
+  //Idc controller
+
+ //reconstraint angle theta to be in [0,2pi] range
+//id and iq are filtered by averaging method
+ theta=theta-((int)(theta*I_PI))*TWOPI;
+ wr=wm*PolePairs;
+
+ /****************************************PLL**************************************/
+
+    // all variable are electrical ones
+
+ theta_err=theta-theta_est;
+
+ if (theta_err > TWOPI*0.75 )
+     theta_err=theta_err-TWOPI;
+
+ if (theta_err < -TWOPI*0.75)
+     theta_err=theta_err+TWOPI;
+
+ // PLL for speed
+ // define the low pass filter in the following section
+ wr_lf=wr_lf+(wr-wr_lf)*Ts*60; //0.003926987;  //bandwidth
+ wr_max=100000.0;
+ wr_min=0.0;
+ theta_lf=theta_lf+(theta_err-theta_lf)*Ts*411.0 ;      //wp=411.0
+ //theta_lf=theta_lf+(theta_err-theta_lf)*Ts*578.0*2 ;      //Tau=1/wp
+ //define the PI controller in the PLL, structure (kp_pll*s+ki_pll)/s
+
+ wr_est=kp_pll*(theta_lf)+wr_int_out;
+
+
+ if ((wr_int_out-wr)>50) {
+	wr_int_out=wr;
+ }
+  if ((wr_int_out-wr)<-50) {
+	wr_int_out=wr;
+ }
+
+ //wr_int_out=wr_int_out+ki_pll*Ts*theta_lf;
+
+ if(wr_est>=wr_max)  {
+      wr_est=wr_max;
+ } else {
+      if(wr_est<=wr_min)  {
+    	  wr_est=wr_min;
+ 	  } else {
+ 		 wr_int_out=wr_int_out+ki_pll*Ts*theta_lf;
+ 	  }
+ }
+
+
+ theta_est=theta_est+wr_est*Ts;
+
+ if (theta_est > TWOPI)
+     theta_est=theta_est-TWOPI;
+ if (theta_est < 0)
+     theta_est=theta_est+TWOPI;
+
+// *********************cascaded PLL**********************
+
+
+ theta_err1=theta_est-theta_est1;
+
+ if (theta_err1 > TWOPI*0.75 )
+     theta_err1=theta_err1-TWOPI;
+
+ if (theta_err1 < -TWOPI*0.75)
+     theta_err1=theta_err1+TWOPI;
+
+ // PLL for speed
+ // define the low pass filter in the following section
+
+ theta_lf1=theta_lf1 + (theta_err1-theta_lf1)*Ts*411.0 ;      //Tau=1/wp
+ //theta_lf=theta_lf+(theta_err-theta_lf)*Ts*578.0*2 ;      //Tau=1/wp
+ //define the PI controller in the PLL, structure (kp_pll*s+ki_pll)/s
+ if ((wr_int_out1-wr)>50.0 ){
+	wr_int_out1=wr;
+ }
+  if ((wr_int_out1-wr)<-50.0) {
+	wr_int_out1=wr;
+ }
+
+
+ wr_est1=kp_pll*(theta_lf1)+wr_int_out1;
+
+ //wr_int_out=wr_int_out+ki_pll*Ts*theta_lf;
+
+ if(wr_est1>=wr_max)  {
+      wr_est1=wr_max;
+ } else {
+      if(wr_est1<=wr_min)  {
+    	  wr_est1=wr_min;
+ 	  } else {
+ 		 wr_int_out1=wr_int_out1+ki_pll*Ts*theta_lf1;
+ 	  }
+ }
+
+ theta_est1=theta_est1+wr_est1*Ts;
+
+ if (theta_est1 >  TWOPI)
+     theta_est1=theta_est1-TWOPI;
+ if (theta_est1 < 0)
+     theta_est1=theta_est1+TWOPI;
+ //
+
+
+
+// theta_err_final=theta_err+theta_err1;
+ theta_err_final=theta_err;
+ if (theta_err_final > 0.15)
+     theta_err_final=0.15;
+
+ if (theta_err_final < -0.15)
+     theta_err_final=-0.15;
+
+
+ theta_est_final=theta-theta_err_final;
+
+ wm_est=0.3333*wr_est1;
+
+
+/*****dq transformation*******/
+if(SpeedRPM<12000.0){
+   theta_est_final=theta;
+   theta_est1=theta;
+   theta_est=theta;
+   wr_int_out1=wr;
+   wr_int_out=wr;   
+   wr_est=wr;
+   wr_est1=wr;
+   
+}
+
+  cos_theta=cosf(theta_est_final);
+  sin_theta=sinf(theta_est_final);
+  i_alpha=TWO_3*(ia-0.5*(ib+ic));
+  i_beta=TWO_3*(SQRT3_2*ib-(SQRT3_2*ic));
+  id=i_alpha*cos_theta+i_beta*sin_theta;
+  iq=-i_alpha*sin_theta+i_beta*cos_theta;
+
+
+  //** check two variable wr_est and theta_est
+  /****************************************PLL END**************************************/
+
+
+ //Idc controller
+
+
+//calculate idc_ref
+//Edc_tmp=Edc;
+Edc_tmp=Vdc;   //Droop with no filter
+
+
+//Edc_ref -> idc_ref look-up table
+
+ if (Edc_tmp>=300.0)
+	 Edc_tmp=300.0;
+if (Edc_tmp<=240.0)
+	Edc_tmp=240.0;
+//#define K_DroopVref		MOD_Variables[66]
+//#define K_DroopKp		MOD_Variables[67]
+//idc_ref=8.0*(Edc_tmp-270);  ///Droop constant 8 nominal
+if ((K_ConvStatus & 0x40) == 0)
+	//idc_ref=K_Edc*(Edc_tmp-Edc0);
+	idc_ref=(0.01*(float)K_DroopKp)*(Edc_tmp-(0.1*(float)K_DroopVref));
+else
+	//idc_ref=(0.1*(float)K_DroopKp)*(0.1*(float)(K_VdcRef - K_DroopVref);
+	idc_ref=(0.01*(float)K_DroopKp)*0.1*(float)(K_VdcRef - K_DroopVref);
+//idc_ref=3.0*(Edc_tmp-270.0);  ///Droop constant
+
+if (((K_ConvStatus & 0x80) == 0x80) && (idc_ref>0))		//Disable negative power generating
+	idc_ref = 0;
+
+if (idc_ref>=160.0)
+	idc_ref=160.0;
+if (idc_ref<=-160.0)
+	idc_ref=-160.0;
+
+/*******************************************/
+/************vdc controller in the idle mode*******************/
+/******this controller works only under the idling mode ********/
+    if (Idling == 1)
+    {
+      /*vdc_err=vdc_ref-Edc;
+      vdc_int_new=vdc_pre_int+0.5*(pre_vdc_err+vdc_err);
+      pre_vdc_err=vdc_err;
+    
+    //  iq_tmp_ref1=0.05*idc_err+0.0875*0.5*idc_int_new; //1400
+     idc_tmp_ref1=0.0264*vdc_err+7.4e-5*vdc_int_new; //10Hz
+     
+     
+     
+    if (idc_tmp_ref1 > i_max )  //check if saturated 
+     {
+       idc_tmp_ref1 = i_max;
+      if (vdc_err > 0)            //check if error will make saturation worse
+      {
+       vdc_int_ok = 0;
+     }
+    }
+ 
+    if (idc_tmp_ref1 < -i_max )  //check if saturated
+    {
+      idc_tmp_ref1= -i_max;
+   //check if error will make saturation worse
+    if (vdc_err < 0)
+     {
+      vdc_int_ok = 0;
+     }
+    
+   }     
+    
+      
+      vdc_pre_int=vdc_int_new;
+      
+      iq_tmp_ref1=-(Edc_tmp*idc_tmp_ref1*6.105006105/wm_est);
+      
+     */
+    	iq_tmp_ref1=0.0;
+    }
+/*************************************/
+
+
+
+//*******************Field weakening***********************/
+//********************give id_ref**************************/
+/***********************part I*****************************/
+//vs= Edc*I_SQRT3*0.98; //0.98*10.0*I_SQRT3;
+vs=245.0*I_SQRT3*0.98;
+//vs=138.6218;
+vs_err=vs-Vdq; //vs_ref is an input and equal to sqrt(vsd^2+vsq^2)
+// vs_int_new = vs_pre_int + (vs_err);
+vs_int_new = vs_pre_int + 0.5*(vs_err+pre_vs_err);
+pre_vs_err=vs_err;
+vs_tmp_output = kp_s*vs_err + ki_s*vs_int_new;
+
+//check if saturated
+vs_int_ok = 1;       //flag check the saturation status of Edc_loop controller
+if (vs_tmp_output > 0) {//vs_tmp_out = Id_ref which should be small than zero
+	vs_tmp_output = 0;
+	if (vs_err > 0)   	//check if error will make saturation worse
+		  vs_int_ok = 0;
+}
+if (vs_tmp_output < -i_max*0.99) {
+	vs_tmp_output = -i_max*0.99;
+	if (vs_err < 0)
+		vs_int_ok = 0;
+
+}
+
+vs_out = vs_tmp_output;  //vs_out is the id_ref
+//Check if intergrator is to be updated
+//update the integrator value if allowed
+if (vs_int_ok)
+	vs_pre_int = vs_int_new;
+/************************Part II*******************************************/
+/**************************************************************************/
+id_ref=vs_out;			                 //                              Speed controller
+//id_ref =0.0;				//<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+id_err=id_ref-id;
+id_int_new = id_pre_int + 0.5*(id_err+pre_id_err);
+pre_id_err=id_err;
+//Do the PI controller
+  vd_tmp_output = kp_i*id_err + ki_i*id_int_new - wr_est1*(Lq*iq_ref);//wr_est1
+//  vd_tmp_output = kp_i*id_err + ki_i*id_int_new - wr*(Lq*iq_ref);
+//check if saturated
+id_int_ok = 1;      		 //flag check the saturation status of d-axis controller
+if (vd_tmp_output >= v_max) {
+	vd_tmp_output = v_max;
+	//check if error will make saturation worse
+	if (id_err > 0)
+		id_int_ok = 0;
+}
+if (vd_tmp_output <= -v_max ) {
+	vd_tmp_output = -v_max;
+	if (id_err < 0)
+		id_int_ok = 0;
+}
+
+//vd_out1=(vd_tmp_output)-wr*(Lq*iq);
+vd_out1=(vd_tmp_output);
+//Check if integrator is to be updated
+//update the integrator value if allowed
+if (id_int_ok)
+	id_pre_int = id_int_new;
+/******************************************************/
+/***********Q axis controller*************************/
+
+
+//Speed loop
+if (Idling == 0) {
+	wm_err=wm_ref_now-wm;
+	wm_int_new = wm_pre_int + 0.5*(wm_err+pre_wm_err);
+	pre_wm_err=wm_err;
+
+	// pre_input=input;
+
+	//Do the PI controller
+	//wm_tmp_output = kp_w*wm_err + ki_w*wm_int_new;
+	wm_tmp_output = kp_w*wm_err + ki_w*wm_int_new;
+} else {
+	wm_int_new = 0;
+	wm_err = 0;
+	pre_wm_err = 0;
+	wm_pre_int = 0;
+	wm_ref_now = wm;
+}
+
+wm_int_ok = 1;       //flag check the saturation status of speed-loop controller
+if (wm_tmp_output > i_max ) { //check if saturated
+	wm_tmp_output = i_max;
+	if (wm_err > 0)            //check if error will make saturation worse
+		wm_int_ok = 0;
+}
+if (wm_tmp_output < 0 ) { //check if saturated, NO BREAKING!!!!!!
+	wm_tmp_output = 0;
+	//check if error will make saturation worse
+	if (wm_err < 0)
+		wm_int_ok = 0;
+}
+
+if (wm_int_ok)
+	wm_pre_int = wm_int_new;
+
+//*******end of the speed controller
+/****************iq controller***********************/
+/****************************************************/
+/*****iq_ref from the E_dc loop**********************/ //differential iq limit
+
+//motoring mode
+//calculation of iq_ref
+
+if (SpeedRPM < 10000.0)
+	Idling = 0;    //motoring
+
+if (SpeedRPM > 12000.0)
+	Idling = 1;
+
+
+
+if ((SpeedRPM < 12100.0) && (SpeedRPM > -12100.0)) {
+	if ((Motoring == 1) && (Idling == 0))
+		iq_ref = wm_tmp_output;		//<<              --------------         Just motoring
+	else
+		iq_ref = iq_tmp_ref1;
+} else {
+	if ((SpeedRPM < 12500.0) && (SpeedRPM > -12500.0))
+		iq_ref = iq_tmp_ref1;
+	else
+		if (Generating == 1) {
+				iq_ref=K_droop*TWO_9*Edc*idc_ref/(flux*wm);   //version 1       Droop
+			/* calculating iq_ref based on the electrical power balancing
+			 *  iq_ref=(Vdc*idc_ref-Vd*id)*Vq/(Vq^2+1e-6);
+			*/
+		}
+		else
+			iq_ref = iq_tmp_ref1;
+}
+
+if ((SpeedRPM > 12500.0)  && (dpr8 == 0 ) && DriveOn) {				//Ready to load
+	 Rdy2Load = 1;
+} else {
+	Rdy2Load = 0;
+}
+
+
+temp_irq_f = sqrt(i_max*i_max-id_ref*id_ref);
+if (iq_ref>=temp_irq_f)
+	iq_ref=temp_irq_f;
+else if (iq_ref<=-temp_irq_f)
+	iq_ref=-temp_irq_f;
+//else
+//	iq_ref=iq_ref;
+
+//now the iq_ref has been derived
+iq_err=iq_ref-iq;
+iq_int_new = iq_pre_int + 0.5*(iq_err+pre_iq_err);
+pre_iq_err=iq_err;
+    vq_tmp_output = kp_i*iq_err + ki_i*iq_int_new+wr_est1*(Ld*id_ref+flux);
+//   vq_tmp_output = kp_i*iq_err + ki_i*iq_int_new+wr*Ld*id_ref+wr*flux;
+
+//check if saturated
+
+iq_int_ok = 1;      	 //flag check the saturation status of q-axis controller
+if (vq_tmp_output >= v_max) {
+	vq_tmp_output = v_max;
+	//check if error will make saturation worse
+	if (iq_err > 0)
+		iq_int_ok = 0;
+}
+
+if (vq_tmp_output <= -v_max) {
+	vq_tmp_output = -v_max;
+	if (iq_err < 0)
+		iq_int_ok = 0;
+}
+
+///vq_out1=vq_tmp_output+wr*Ld*id+wr*flux;
+vq_out1=vq_tmp_output;
+//vq_out1=vq_tmp_output+wr*Ld*id;
+
+//Check if integrator is to be updated
+//update the integrator value if allowed
+if (iq_int_ok)
+	iq_pre_int = iq_int_new;
+if (wm>335.1) {
+  vd_out=(vd_out1*cosf(lamda*wr*Ts)-vq_out1*sinf(lamda*wr*Ts));
+  vq_out=(vd_out1*sinf(lamda*wr*Ts)+vq_out1*cosf(lamda*wr*Ts));
+} else {
+  vd_out=(vd_out1*cosf(wr*Ts)-vq_out1*sinf(wr*Ts));
+  vq_out=(vd_out1*sinf(wr*Ts)+vq_out1*cosf(wr*Ts));
+}
+
+//calculate output of va,vb and vc
+
+vd_f=vd_out;
+vq_f=vq_out;
+
+ // #####################################################
+ // ###############   End TAO's code   ##################
+ // #####################################################
+Vdq = sqrt(vd_f*vd_f + vq_f*vq_f);
+//Vdq_f = 2.929144074e-02*Vdq+5.858288148e-02*Vdq_k1+2.929144074e-02*Vdq_k2+1.460952963e+00*Vdq_fk1-5.781187261e-01*Vdq_fk2;  //flt 1000Hz, damp = 0.707, fsw=16000Hz
+//Vdq_f = 5.051713082e-01*Vdq+1.010342616e+00*Vdq_k1+5.051713082e-01*Vdq_k2-7.482776954e-01*Vdq_fk1-2.724075374e-01*Vdq_fk2;  //flt 10000Hz, damp = 0.707, fsw=16000Hz
+
+//Vdq_f = Vdq;
+
+/*
+if (Vdq_f > 155.0)
+	Vdq_f = 155.0;
+if (Vdq_f < -155.0)
+	Vdq_f = -155; 
+
+Vdq_fk2 = Vdq_fk1;
+Vdq_fk1 = Vdq_f;
+Vdq_k2 = Vdq_k1;
+Vdq_k1 = Vdq;
+Vdq_fk2 = Vdq_fk1;
+Vdq_fk1 = Vdq_f;
+Vdq_k2 = Vdq_k1;
+Vdq_k1 = Vdq;   */
+
+// outputs: vd_f and vq_f
+V_ALPHA = vd_f * cos_theta - vq_f * sin_theta;
+V_BETA = vd_f * sin_theta + vq_f * cos_theta;
+
+
+
+ /// *******   begin matlab code  *********
+
+ //Calculate magnitude and angle of reference vector Vs
+ v_mag = sqrt(V_ALPHA*V_ALPHA + V_BETA*V_BETA);
+ v_ang = fmod( atan2(V_BETA, V_ALPHA)+TWOPI, TWOPI );
+
+ //Sector detection - sector 1 middle at PhaseA ref peak
+ sector = (int) floor(_3_PI*v_ang); // 0..5
+
+ //Calculate sector angle, alpha
+ sector_offset = PI_3 * (double) (sector);
+ alpha = v_ang - sector_offset;
+
+ //Put current meas in array, positive if going out from the converter
+	outputCurr[0] = ia;
+	outputCurr[1] = ib;
+	outputCurr[2] = ic;
+
+
+//Marco stuff
+m = SQRT_3*v_mag/(V_DC_H+V_DC_L);
+//m = SQRT3_270*v_mag;
+
+sq3cosA = SQRT_3*cosf(alpha);
+sinA = sinf(alpha);
+//maxM = 2.0/(sq3cosA+sinA)-0.005;	//To use the maximum of the hexagon, 0.005 = margin
+maxM = 0.99;
+
+if (m>maxM) m = maxM;
+if (m<0.0001) m = 0.0001;
+msq3cos = m*sq3cosA;
+msin = m*sinA;
+
+/*  60 degrees sector,
+splitted in 4 small triangles
+      E
+     / \
+    / 3 \
+   F-----D
+  / \ 2 / \
+ / 1 \ / 4 \
+A-----B-----C    */
+
+if (PATTERN == 2) {
+//Sin (60 -alpha) = sin60CosAlpha-cos60SinAlpha  =sqrt3_2Cos - 0.5SinA = 0.5*(sqrt3*cos +sin)
+ //  d1 = m*sinf(PI_3-alpha);   sw1 = 2; //Conf C
+   d1 = (msq3cos-msin)*0.5;  sw1 = 2; //Conf C
+   d2 = msin;                sw2 = 4; //Conf E
+   d3 =  1.0-d1-d2;          sw3 = 0; //Conf A
+   SUBSECTOR = 0;
+} else {
+	if((msq3cos-msin)>1.0) { 	//Small sector 4
+			d1 = 2.0-(msq3cos+msin);  sw1 = 1; //Conf B
+			d2 = 2.0*msin;            sw2 = 3; //Conf D
+			d3 = msq3cos-msin-1;      sw3 = 2; //Conf C
+			SUBSECTOR = 4;
+	} else if((msq3cos+msin)<1.0) {  //Small sector 1
+			d1 = msq3cos-msin;        sw1 = 1; //Conf B
+			d2 = 2.0*msin;            sw2 = 5; //Conf F
+			d3 = 1.0-d1-d2;           sw3 = 0; //Conf A
+			SUBSECTOR = 1;
+	} else if(msin>0.5) {          //Small sector 3
+			d1 = 2-(msq3cos+msin);    sw1 = 5; //Conf F
+			d2 = msq3cos-msin;        sw2 = 3; //Conf D
+			d3 = 2.0*msin-1;          sw3 = 4; //Conf E
+			SUBSECTOR = 3;
+	} else {                       //Small sector 2
+			d1 = 1.0-(2.0*msin);      sw1 = 1; //Conf B
+			d2 = 1.0-msq3cos+msin;    sw2 = 5; //Conf F
+			d3 = msq3cos+msin-1;      sw3 = 3; //Conf D
+			SUBSECTOR = 2;
+	}
+}
+dI   = d1*Tseq_Pulses;
+dII  = d2*Tseq_Pulses;
+dIII = d3*Tseq_Pulses;
+
+swConf3 = sw_3lvl[sector][sw3];
+if (PATTERN == 2) //2 level operation
+{
+   swConf1 = sw_3lvl[sector][sw1];
+   swConf2 = sw_3lvl[sector][sw2];
+}
+else  //cap bal, 3 level
+{
+	it_med = 0;
+	it_smallB = 0;
+	it_smallF = 0;
+		swConf1 = sw_3lvl[sector][sw1];
+		swConf2 = sw_3lvl[sector][sw2];
+		DEBUG1 = (V_DC_H-V_DC_L)*CapVal;
+		DEBUG2 = 0;
+		DEBUG3 = 0;
+
+	if (SUBSECTOR>1) {  //There is a medium vector
+		swTmp = sw_3lvl[sector][3];  //Sw config for Conf D, medium vector
+		currVect = curr_vect[(swTmp>>8) & 0x3][(swTmp>>4) & 0x3][swTmp & 0x3];
+			it_med = outputCurr[currVect-1];
+		if (SUBSECTOR>2) {
+			it_med = it_med*d2;
+		} else {
+				it_med = it_med*d3;
+		}
+		DEBUG2 = it_med*Ts;
+	}
+	capDQ = ((V_DC_H-V_DC_L)*CapVal)+it_med*Ts;
+
+	if (SUBSECTOR !=3 ) {  //There is a small vector B
+		swTmp = sw_3lvl[sector][1];  //Sw config for Conf B, small vector
+		currVect = curr_vect[(swTmp>>8) & 0x3][(swTmp>>4) & 0x3][swTmp & 0x3];
+		if (currVect<0xf) {  //positive current
+			it_smallB = outputCurr[currVect-1];
+		} else {
+			it_smallB = -outputCurr[(currVect & 0x3) -1];
+		}
+			it_smallB = it_smallB*d1*Ts;
+			if (capDQ * it_smallB > 0) { // same sign
+				swConf1 = swConf1+0x111; 		//Negative configuration
+				capDQ = capDQ - it_smallB;
+				DEBUG3 = - it_smallB;
+			} else {
+				capDQ = capDQ + it_smallB;
+				DEBUG3 = it_smallB;
+			}
+		}
+
+	if (SUBSECTOR != 4) {  //There is a small vector F
+		swTmp = sw_3lvl[sector][5];  //Sw config for Conf F, small vector
+		currVect = curr_vect[(swTmp>>8) & 0x3][(swTmp>>4) & 0x3][swTmp & 0x3];
+		if (currVect<0xf) {  //positive current
+			it_smallF = outputCurr[currVect-1];
+		} else {
+			it_smallF = -outputCurr[(currVect & 0x3) -1];
+		}
+		if (SUBSECTOR<3) {
+			it_smallF = it_smallF*d2;
+				if (capDQ * it_smallF > 0) { // same sign
+					swConf2 = swConf2+0x111;		//Negative configuration
+					DEBUG3 = DEBUG3 - it_smallF*d2*Ts;
+				} else {
+					DEBUG3 = DEBUG3 + it_smallF*d2*Ts;
+				}
+		} else {
+				it_smallF = it_smallF*d1;
+				if (capDQ * it_smallF > 0) {// same sign
+					swConf1 = swConf1+0x111;		//Negative configuration
+					DEBUG3 = DEBUG3 - it_smallF*d1*Ts;
+				} else {
+					DEBUG3 = DEBUG3 + it_smallF*d1*Ts;
+				}
+		}
+	}
+}
+/*
+   sw_time[0] = CurrentTime + Ts*d1/2.0;
+   sw_sequ[0] = swConf1;
+   sw_time[1] = CurrentTime + Ts*(d1+d2)/2.0;
+   sw_sequ[1] = swConf2;
+   sw_time[2] = CurrentTime + Ts*(d3+(d1+d2)/2.0);
+   sw_sequ[2] = sw_3lvl[sector][sw3];
+   sw_time[3] = CurrentTime + Ts*(1.0-d1/2.0);
+   sw_sequ[3] = swConf2;
+   sw_time[4] = DBL_MAX;
+   sw_sequ[4] = swConf1;
+ */
+//if (!DriveOn || ((dpr1 & 0x800) != 0)) {
+if (!DriveOn) {
+	if (SpeedRPM > 8000.0 || SpeedRPM < -8000.0) {		//Short terminals
+	   *(unsigned int *)DPR1 = (0x1110000 | (10 ));
+	   *(unsigned int *)DPR1 = (0x1110000); // PVT=0 => should last whole period
+	} else {
+		   *(unsigned int *)DPR1 = (0x3330000 | (10 ));		//Open everything
+		   *(unsigned int *)DPR1 = (0x3330000); // PVT=0 => should last whole period
+	}
+
+} else {
+	if (dI>2)         *(unsigned int *)DPR1 = (swConf1<<16 | dI>>1);
+	if (dII>2) 		  *(unsigned int *)DPR1 = (swConf2<<16 | dII>>1);
+	if (dIII>2)		  *(unsigned int *)DPR1 = (swConf3<<16 | dIII);
+	if (dII>2)        *(unsigned int *)DPR1 = (swConf2<<16 | dII>>1);
+	         		  *(unsigned int *)DPR1 = (swConf1<<16);
+}
+
+
+if (SpeedRPM > 0)
+	K_SpeedRead = SpeedRPM;
+else
+	K_SpeedRead = 0;
+//K_SpeedRead = wm_ref_now * Rad2RPM;
+Torque = 0.1638*iq;
+PowerOut = Torque * wm;
+K_IdRead = (Uint16)(id*10)+32768;
+K_IqRead = (Uint16)(iq*10)+32768;
+K_IaRead = (Uint16)(TempMax*10)+32768;
+K_VdcPRead = V_DC_H * 10;
+K_VdcMRead = V_DC_L * 10;
+K_PowRead =	(Uint16)(0.1 * PowerOut) + 32768;
+K_TestBit1 = (dpr8 & 0xffff);
+K_TestBit2 = (dpr8>>16 & 0xffff);
+
+statusBits = (DriveOn & 1) | (Generating << 1) | (Motoring << 2) | (DriveOn & 1)<<3 | (Rdy2Load <<4) | (K_ConvStatusCmd & 0xFFC0); //Copy bits >=6;
+if (dpr8) {
+	*(unsigned int *)DPR9 &= 0xFDFFFFFF;	//Converter ready
+	*(unsigned int *)DPR9 |= 0x08000000;       //Digital output 3  set to 1   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	statusBits |= 1<<5;
+} else {
+	*(unsigned int *)DPR9 &= 0xF7FFFFFF;  //Digital output 3  set to 1   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	*(unsigned int *)DPR9 |= 0x02000000;		//Converter ready output
+}
+K_ConvStatus = statusBits;
+
+DriveOn_f = DriveOn;
+
+theta_deg = theta * 57.295779513;
+
+if(	DriveOn){
+	next_message = 0x50574DFF;
+} else {
+	next_message = 0x50574DFE;
+}
+/*
+ *(unsigned int *)DPR9 |= 0x01000000;
+ *(unsigned int *)DPR9 |= 0x02000000;
+ *(unsigned int *)DPR9 |= 0x04000000;
+ *(unsigned int *)DPR9 |= 0x08000000;
+ *(unsigned int *)DPR9 &= 0xF0FFFFFF;
+
+*/
+
+
+#ifdef _HOST
+ DataCapture();
+#endif
+
+
+//*(unsigned int *)DPR9 &= 0xF8FFFFFF;  //0 for output 0,1 and 2
+
+}
+
+
