@@ -16,10 +16,10 @@
 #define K_MaxSpeedRPM   21000
 #define __DisplaySpeed   1
 #define k_SpeedMotoring  19500.0/60*TWOPI
-//#define k_SlopeMotoring  10000.0/60.0*TWOPI/(16000.0*120.0)    //10k in 120 sec
-// #define k_SlopeMotoring  8000.0/60.0*TWOPI/(16000.0*30.0)        //8k in 30 sec
+#define k_SlopeMotoring  10000.0/60.0*TWOPI/(16000.0*120.0)    //10k in 120 sec
+//#define k_SlopeMotoring  8000.0/60.0*TWOPI/(16000.0*30.0)        //8k in 30 sec
 //#define k_SlopeMotoring  0.001636246173745   //250/30*pi/(16000*1)  %6.25krpm in 25 sec
-#define k_SlopeMotoring  0.0008181230868725    //6250.0/60.0*TWOPI/(16000.0*50.0)        //6.2k in 50 sec
+//#define k_SlopeMotoring  0.0008181230868725    //6250.0/60.0*TWOPI/(16000.0*50.0)        //6.2k in 50 sec
 
 
 unsigned int    ConvCmd;
@@ -1900,7 +1900,7 @@ do {
 
  theta_est_final=theta-theta_err_final;
 
- wm_est=0.3333*wr_est1;
+ wm_est=0.3333333*wr_est1;
 
 
 /*****dq transformation*******/
@@ -2045,7 +2045,7 @@ id_err=id_ref-id;
 id_int_new = id_pre_int + 0.5*(id_err+pre_id_err);
 pre_id_err=id_err;
 //Do the PI controller
-  vd_tmp_output = kp_i*id_err + ki_i*id_int_new - wr_est1*(Lq*iq_ref);//wr_est1
+  vd_tmp_output = kp_i*id_err + ki_i*id_int_new - wr_est*(Lq*iq_ref);//wr_est1
 //  vd_tmp_output = kp_i*id_err + ki_i*id_int_new - wr*(Lq*iq_ref);
 //check if saturated
 id_int_ok = 1;      		 //flag check the saturation status of d-axis controller
@@ -2160,7 +2160,7 @@ else if (iq_ref<=-temp_irq_f)
 iq_err=iq_ref-iq;
 iq_int_new = iq_pre_int + 0.5*(iq_err+pre_iq_err);
 pre_iq_err=iq_err;
-    vq_tmp_output = kp_i*iq_err + ki_i*iq_int_new+wr_est1*(Ld*id_ref+flux);
+    vq_tmp_output = kp_i*iq_err + ki_i*iq_int_new+wr_est*(Ld*id_ref+flux);
 //   vq_tmp_output = kp_i*iq_err + ki_i*iq_int_new+wr*Ld*id_ref+wr*flux;
 
 //check if saturated
