@@ -1763,7 +1763,9 @@ do {
  Edc = Vdc_OUT;
  //Edc_rf=Edc;
  //Edc_rf = Edc_rf + (Vdc-Edc_rf)*2.0e-03; //100Hz filter used in flux weakening
+ Edc_rf=Edc_rf+(Edc-Edc_rf)*6.28*1000.0*Ts;
 
+ Edc_tmp=Edc_rf;
 
  Edc_fk2 = Edc_fk1;
  Edc_fk1 = Edc;
@@ -1857,13 +1859,7 @@ do {
  theta_lf1=theta_lf1 + (theta_err1-theta_lf1)*Ts*411.0 ;      //Tau=1/wp
  //theta_lf=theta_lf+(theta_err-theta_lf)*Ts*578.0*2 ;      //Tau=1/wp
  //define the PI controller in the PLL, structure (kp_pll*s+ki_pll)/s
- if ((wr_int_out1-wr)>50.0 ){
-	wr_int_out1=wr;
- }
-  if ((wr_int_out1-wr)<-50.0) {
-	wr_int_out1=wr;
- }
-
+ 
 
  wr_est1=kp_pll*(theta_lf1)+wr_int_out1;
 
@@ -1878,6 +1874,14 @@ do {
  		 wr_int_out1=wr_int_out1+ki_pll*Ts*theta_lf1;
  	  }
  }
+
+ if ((wr_int_out1-wr)>50.0 ){
+	wr_int_out1=wr;
+ }
+  if ((wr_int_out1-wr)<-50.0) {
+	wr_int_out1=wr;
+ }
+
 
  theta_est1=theta_est1+wr_est1*Ts;
 
@@ -1904,7 +1908,7 @@ do {
 
 
 /*****dq transformation*******/
-if(SpeedRPM<12000.0){
+if (Generating==0){
    theta_est_final=theta;
    theta_est1=theta;
    theta_est=theta;
@@ -1914,6 +1918,7 @@ if(SpeedRPM<12000.0){
    wr_est1=wr;
    
 }
+
 
   cos_theta=cosf(theta_est_final);
   sin_theta=sinf(theta_est_final);
@@ -2010,7 +2015,7 @@ if (idc_ref<=-160.0)
 //********************give id_ref**************************/
 /***********************part I*****************************/
 //vs= Edc*I_SQRT3*0.98; //0.98*10.0*I_SQRT3;
-vs=245.0*I_SQRT3*0.98;
+vs=250.0*I_SQRT3*0.98;
 //vs=138.6218;
 vs_err=vs-Vdq; //vs_ref is an input and equal to sqrt(vsd^2+vsq^2)
 // vs_int_new = vs_pre_int + (vs_err);
